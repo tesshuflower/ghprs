@@ -380,7 +380,7 @@ func promptForApproval(pr PullRequest, owner, repo string, client api.RESTClient
 
 	// Optionally display diff if --show-diff is used
 	if showDiff {
-		err := displayDiff(client, owner, repo, pr.Number)
+		err := displayDiff(owner, repo, pr.Number)
 		if err != nil {
 			fmt.Printf("   ⚠️  Could not fetch diff: %v\n", err)
 		}
@@ -475,7 +475,7 @@ func promptForApproval(pr PullRequest, owner, repo string, client api.RESTClient
 				fmt.Printf("\n📄 Diff already shown above.\n")
 			} else {
 				// Show diff
-				err := displayDiff(client, owner, repo, pr.Number)
+				err := displayDiff(owner, repo, pr.Number)
 				if err != nil {
 					fmt.Printf("   ❌ Could not fetch diff: %v\n", err)
 				}
@@ -878,12 +878,28 @@ func displayFileList(files []PRFile) {
 }
 
 // displayDiff shows the diff content for a PR with color coding
-func displayDiff(client api.RESTClient, owner, repo string, prNumber int) error {
-	// Construct the diff URL manually
+func displayDiff(owner, repo string, prNumber int) error {
+	// The go-gh REST client doesn't expose direct HTTP methods for custom Accept headers,
+	// so we use a direct approach: use the .diff URL directly with authentication
+	// We'll construct the URL and use Go's http package but with authentication from go-gh
 	diffURL := fmt.Sprintf("https://github.com/%s/%s/pull/%d.diff", owner, repo, prNumber)
 
-	// Make HTTP request to get the diff content
-	resp, err := http.Get(diffURL)
+	// Create an HTTP request
+	req, err := http.NewRequest("GET", diffURL, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create diff request: %v", err)
+	}
+
+	// Try to get authentication token from environment (same as go-gh uses)
+	if token := os.Getenv("GH_TOKEN"); token != "" {
+		req.Header.Set("Authorization", "token "+token)
+	} else if token := os.Getenv("GITHUB_TOKEN"); token != "" {
+		req.Header.Set("Authorization", "token "+token)
+	}
+
+	// Make the request
+	httpClient := &http.Client{}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to fetch diff: %v", err)
 	}
