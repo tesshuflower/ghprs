@@ -61,6 +61,11 @@ type ReviewRequest struct {
 	Event string `json:"event"`
 }
 
+// CommentRequest represents a pull request comment request
+type CommentRequest struct {
+	Body string `json:"body"`
+}
+
 // Review represents a pull request review
 type Review struct {
 	State string `json:"state"`
@@ -111,7 +116,7 @@ Examples:
   ghprs konflux --state closed
   ghprs konflux --limit 5
   ghprs konflux --current                    # Force use current repo, bypass config
-  ghprs konflux --approve                    # Approve all open Konflux PRs
+  ghprs konflux --approve                    # Approve all open Konflux PRs (adds review + /lgtm comment)
   ghprs konflux owner/repo --approve         # Approve Konflux PRs in specific repo`,
 	Run: func(cmd *cobra.Command, args []string) {
 		listPullRequests(args, "red-hat-konflux[bot]", true)
@@ -323,10 +328,31 @@ func approveKonfluxPRs(client api.RESTClient, owner, repo string, pullRequests [
 
 		fmt.Printf("✅ Approving #%d: %s\n", pr.Number, pr.Title)
 
+		// First, add the approval review
 		err = client.Post(reviewPath, bytes.NewReader(reviewJSON), nil)
 		if err != nil {
 			fmt.Printf("❌ Failed to approve #%d: %v\n", pr.Number, err)
 			continue
+		}
+
+		// Second, add a "/lgtm" comment
+		commentPath := fmt.Sprintf("repos/%s/%s/issues/%d/comments", owner, repo, pr.Number)
+		comment := CommentRequest{
+			Body: "/lgtm",
+		}
+
+		commentJSON, err := json.Marshal(comment)
+		if err != nil {
+			fmt.Printf("⚠️  Failed to marshal comment for #%d: %v\n", pr.Number, err)
+			// Continue since approval was successful
+		} else {
+			err = client.Post(commentPath, bytes.NewReader(commentJSON), nil)
+			if err != nil {
+				fmt.Printf("⚠️  Failed to add /lgtm comment to #%d: %v\n", pr.Number, err)
+				// Continue since approval was successful
+			} else {
+				fmt.Printf("   ✓ Added /lgtm comment to #%d\n", pr.Number)
+			}
 		}
 
 		approvedCount++
@@ -408,5 +434,5 @@ func init() {
 	konfluxCmd.Flags().StringVarP(&state, "state", "s", "open", "Filter by state: open, closed, all")
 	konfluxCmd.Flags().IntVarP(&limit, "limit", "l", 30, "Maximum number of pull requests to show")
 	konfluxCmd.Flags().BoolVarP(&current, "current", "c", false, "Use current repository, bypass config")
-	konfluxCmd.Flags().BoolVarP(&approve, "approve", "a", false, "Approve all open Konflux pull requests")
+	konfluxCmd.Flags().BoolVarP(&approve, "approve", "a", false, "Approve all open Konflux pull requests (adds review + /lgtm comment)")
 }
