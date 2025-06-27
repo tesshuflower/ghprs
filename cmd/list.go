@@ -114,7 +114,11 @@ Examples:
   ghprs list --limit 5
   ghprs list --current                       # Force use current repo, bypass config
   ghprs list --sort-by oldest               # Show oldest PRs first
-  ghprs list --sort-by updated               # Sort by last update`,
+  ghprs list --sort-by updated               # Sort by last update
+  ghprs list --approve                       # Interactively approve PRs (review + /lgtm comment)
+  ghprs list --approve --show-files          # Approve with detailed file lists
+  ghprs list --approve --show-diff           # Approve with detailed diff display
+  ghprs list --approve                       # Interactive approval (use 'f' to view files, 'd' to view diff)`,
 	Run: func(cmd *cobra.Command, args []string) {
 		listPullRequests(args, "", false)
 	},
@@ -149,6 +153,11 @@ Examples:
 	Run: func(cmd *cobra.Command, args []string) {
 		listPullRequests(args, "red-hat-konflux[bot]", true)
 	},
+}
+
+// ApprovalConfig controls the behavior of the approval process
+type ApprovalConfig struct {
+	IsKonflux bool
 }
 
 func listPullRequests(args []string, authorFilter string, isKonflux bool) {
@@ -281,8 +290,18 @@ func listPullRequests(args []string, authorFilter string, isKonflux bool) {
 		}
 
 		// Handle approval if requested
-		if approve && isKonflux {
-			approveKonfluxPRs(*client, owner, repo, pullRequests)
+		if approve {
+			config := ApprovalConfig{
+				IsKonflux: false,
+			}
+
+			if isKonflux {
+				config = ApprovalConfig{
+					IsKonflux: true,
+				}
+			}
+
+			approvePRsWithConfig(*client, owner, repo, pullRequests, config)
 			continue
 		}
 
@@ -336,8 +355,8 @@ func listPullRequests(args []string, authorFilter string, isKonflux bool) {
 	}
 }
 
-// promptForApproval prompts the user to approve a specific PR
-func promptForApproval(pr PullRequest, owner, repo string, client api.RESTClient) bool {
+// promptForApproval prompts the user to approve a specific PR with configurable behavior
+func promptForApproval(pr PullRequest, owner, repo string, client api.RESTClient, config ApprovalConfig) bool {
 	fmt.Printf("\n🔍 Review PR #%d:\n", pr.Number)
 	fmt.Printf("   Title: %s\n", pr.Title)
 	fmt.Printf("   Author: @%s\n", pr.User.Login)
@@ -367,19 +386,22 @@ func promptForApproval(pr PullRequest, owner, repo string, client api.RESTClient
 		}
 	}
 
-	// Check for Tekton files
-	onlyTektonFiles, tektonFiles, err := checkTektonFilesDetailed(client, owner, repo, pr.Number)
-	if err != nil {
-		fmt.Printf("   ⚠️  Could not check Tekton files: %v\n", err)
-	} else if onlyTektonFiles {
-		fmt.Printf("   ✅ ONLY modifies Tekton files: %s\n", strings.Join(tektonFiles, ", "))
-	} else {
-		fmt.Printf("   ❌ Does NOT exclusively modify target Tekton files\n")
-	}
+	// Konflux-specific checks
+	if config.IsKonflux {
+		// Check for Tekton files
+		onlyTektonFiles, tektonFiles, err := checkTektonFilesDetailed(client, owner, repo, pr.Number)
+		if err != nil {
+			fmt.Printf("   ⚠️  Could not check Tekton files: %v\n", err)
+		} else if onlyTektonFiles {
+			fmt.Printf("   ✅ ONLY modifies Tekton files: %s\n", strings.Join(tektonFiles, ", "))
+		} else {
+			fmt.Printf("   ❌ Does NOT exclusively modify target Tekton files\n")
+		}
 
-	// Check for migration warnings
-	if hasMigrationWarning(pr) {
-		fmt.Printf("   🚨 MIGRATION WARNING: This PR contains migration notes - review carefully!\n")
+		// Check for migration warnings
+		if hasMigrationWarning(pr) {
+			fmt.Printf("   🚨 MIGRATION WARNING: This PR contains migration notes - review carefully!\n")
+		}
 	}
 
 	// Show hold status if applicable
@@ -471,13 +493,17 @@ func promptForApproval(pr PullRequest, owner, repo string, client api.RESTClient
 	}
 }
 
-func approveKonfluxPRs(client api.RESTClient, owner, repo string, pullRequests []PullRequest) {
+func approvePRsWithConfig(client api.RESTClient, owner, repo string, pullRequests []PullRequest, config ApprovalConfig) {
 	approvedCount := 0
 	skippedCount := 0
 	alreadyApprovedCount := 0
 	userSkippedCount := 0
 
-	fmt.Printf("\n🎯 Interactive approval mode for %d Konflux PRs\n", len(pullRequests))
+	prType := "PRs"
+	if config.IsKonflux {
+		prType = "Konflux PRs"
+	}
+	fmt.Printf("\n🎯 Interactive approval mode for %d %s\n", len(pullRequests), prType)
 
 	// Build help message based on what's already shown
 	helpOptions := []string{"[y]es to approve", "[N]o to skip (default)", "[q]uit"}
@@ -521,12 +547,10 @@ func approveKonfluxPRs(client api.RESTClient, owner, repo string, pullRequests [
 			fmt.Printf("⚠️  Could not check existing reviews for #%d: %v\n", pr.Number, err)
 			// Continue with prompt despite error
 		} else {
-			// Check if we already have an approval from the current user
+			// Check if we already have an approval from any user
 			alreadyApproved := false
 			for _, review := range reviews {
 				if review.State == "APPROVED" {
-					// We could check if it's from the current user, but for simplicity
-					// we'll consider any approval as sufficient
 					alreadyApproved = true
 					break
 				}
@@ -540,7 +564,7 @@ func approveKonfluxPRs(client api.RESTClient, owner, repo string, pullRequests [
 		}
 
 		// Prompt user for approval decision
-		if !promptForApproval(pr, owner, repo, client) {
+		if !promptForApproval(pr, owner, repo, client, config) {
 			userSkippedCount++
 			continue
 		}
@@ -548,7 +572,7 @@ func approveKonfluxPRs(client api.RESTClient, owner, repo string, pullRequests [
 		// Create approval review
 		reviewPath := fmt.Sprintf("repos/%s/%s/pulls/%d/reviews", owner, repo, pr.Number)
 		review := ReviewRequest{
-			Body:  "Approved by ghprs CLI tool for Konflux automation",
+			Body:  "/lgtm",
 			Event: "APPROVE",
 		}
 
@@ -561,60 +585,24 @@ func approveKonfluxPRs(client api.RESTClient, owner, repo string, pullRequests [
 
 		fmt.Printf("✅ Approving #%d: %s\n", pr.Number, pr.Title)
 
-		// First, add the approval review
+		// Add the approval review
 		err = client.Post(reviewPath, bytes.NewReader(reviewJSON), nil)
 		if err != nil {
 			fmt.Printf("❌ Failed to approve #%d: %v\n", pr.Number, err)
 			continue
 		}
 
-		// Second, add a "/lgtm" comment
-		commentPath := fmt.Sprintf("repos/%s/%s/issues/%d/comments", owner, repo, pr.Number)
-		comment := CommentRequest{
-			Body: "/lgtm",
-		}
-
-		commentJSON, err := json.Marshal(comment)
-		if err != nil {
-			fmt.Printf("⚠️  Failed to marshal comment for #%d: %v\n", pr.Number, err)
-			// Continue since approval was successful
-		} else {
-			err = client.Post(commentPath, bytes.NewReader(commentJSON), nil)
-			if err != nil {
-				fmt.Printf("⚠️  Failed to add /lgtm comment to #%d: %v\n", pr.Number, err)
-				// Continue since approval was successful
-			} else {
-				fmt.Printf("   ✓ Added /lgtm comment to #%d\n", pr.Number)
-			}
-		}
-
 		approvedCount++
 		fmt.Printf("   ✓ Successfully approved #%d\n", pr.Number)
 	}
 
-	fmt.Printf("\n📊 Summary:\n")
+	// Print summary
+	fmt.Printf("\n📊 Approval Summary:\n")
 	fmt.Printf("   ✅ Approved: %d\n", approvedCount)
-	fmt.Printf("   ✅ Already approved: %d\n", alreadyApprovedCount)
-	fmt.Printf("   👤 User skipped: %d\n", userSkippedCount)
 	fmt.Printf("   ⏭️  Auto-skipped: %d\n", skippedCount)
-	fmt.Printf("   📝 Total: %d\n", len(pullRequests))
-}
-
-func getStateIcon(state string, isDraft bool) string {
-	if isDraft {
-		return "🟡 (draft)"
-	}
-
-	switch state {
-	case "open":
-		return "🟢 (open)"
-	case "closed":
-		return "🔴 (closed)"
-	case "merged":
-		return "🟣 (merged)"
-	default:
-		return "⚪ (" + state + ")"
-	}
+	fmt.Printf("   ✅ Already approved: %d\n", alreadyApprovedCount)
+	fmt.Printf("   ❌ User skipped: %d\n", userSkippedCount)
+	fmt.Printf("   📊 Total processed: %d\n", len(pullRequests))
 }
 
 // isOnHold checks if a PR has the "do-not-merge/hold" label
@@ -1016,6 +1004,7 @@ func init() {
 	listCmd.Flags().IntVarP(&limit, "limit", "l", 30, "Maximum number of pull requests to show")
 	listCmd.Flags().BoolVarP(&current, "current", "c", false, "Use current repository, bypass config")
 	listCmd.Flags().StringVar(&sortBy, "sort-by", "", "Sort PRs by: newest (default), oldest, updated, number, priority")
+	listCmd.Flags().BoolVarP(&approve, "approve", "a", false, "Interactively approve pull requests (review + /lgtm comment)")
 	listCmd.Flags().BoolVarP(&showFiles, "show-files", "f", false, "Show detailed file list during approval process")
 	listCmd.Flags().BoolVarP(&showDiff, "show-diff", "d", false, "Show detailed diff during approval process")
 	listCmd.Flags().BoolVar(&noColor, "no-color", false, "Disable color output in diff display")
