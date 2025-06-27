@@ -82,11 +82,12 @@ type PRFile struct {
 }
 
 var (
-	state      string
-	limit      int
-	approve    bool
-	current    bool
-	tektonOnly bool
+	state         string
+	limit         int
+	approve       bool
+	current       bool
+	tektonOnly    bool
+	migrationOnly bool
 )
 
 // listCmd represents the list command
@@ -128,6 +129,7 @@ Examples:
   ghprs konflux --current                    # Force use current repo, bypass config
   ghprs konflux --approve                    # Interactively approve Konflux PRs (review + /lgtm comment)
   ghprs konflux --tekton-only                # Show only PRs that EXCLUSIVELY modify Tekton files
+  ghprs konflux --migration-only             # Show only PRs with migration warnings
   ghprs konflux owner/repo --approve         # Approve Konflux PRs in specific repo`,
 	Run: func(cmd *cobra.Command, args []string) {
 		listPullRequests(args, "red-hat-konflux[bot]", true)
@@ -272,8 +274,19 @@ func listPullRequests(args []string, authorFilter string, isKonflux bool) {
 				}
 			}
 
+			// Check for migration warnings
+			hasMigration := false
+			if isKonflux {
+				hasMigration = hasMigrationWarning(pr)
+			}
+
 			// Skip PRs that don't exclusively modify Tekton files if --tekton-only flag is set
 			if tektonOnly && !onlyTektonFiles {
+				continue
+			}
+
+			// Skip PRs that don't have migration warnings if --migration-only flag is set
+			if migrationOnly && !hasMigration {
 				continue
 			}
 
@@ -289,6 +302,9 @@ func listPullRequests(args []string, authorFilter string, isKonflux bool) {
 			fmt.Printf("        %s → %s by @%s\n", pr.Head.Ref, pr.Base.Ref, pr.User.Login)
 			if isKonflux && onlyTektonFiles && len(tektonFiles) > 0 {
 				fmt.Printf("        📁 Tekton-only files: %s\n", strings.Join(tektonFiles, ", "))
+			}
+			if isKonflux && hasMigration {
+				fmt.Printf("        🚨 Contains migration warnings\n")
 			}
 			fmt.Printf("        %s\n\n", pr.HTMLURL)
 		}
@@ -311,6 +327,11 @@ func promptForApproval(pr PullRequest, owner, repo string, client api.RESTClient
 		fmt.Printf("   ✅ ONLY modifies Tekton files: %s\n", strings.Join(tektonFiles, ", "))
 	} else {
 		fmt.Printf("   ❌ Does NOT exclusively modify target Tekton files\n")
+	}
+
+	// Check for migration warnings
+	if hasMigrationWarning(pr) {
+		fmt.Printf("   🚨 MIGRATION WARNING: This PR contains migration notes - review carefully!\n")
 	}
 
 	// Show hold status if applicable
@@ -525,6 +546,31 @@ func checkTektonFilesDetailed(client api.RESTClient, owner, repo string, prNumbe
 	return onlyTektonFiles, tektonFiles, nil
 }
 
+// hasMigrationWarning checks if a PR body contains migration warnings
+func hasMigrationWarning(pr PullRequest) bool {
+	if pr.Body == "" {
+		return false
+	}
+
+	// Look for migration warning patterns in the PR body
+	// Common patterns: ⚠️[migration]..., :warning:[migration], ⚠️migration⚠️
+	migrationPatterns := []string{
+		"⚠️[migration]",
+		":warning:[migration]",
+		"⚠️migration⚠️",
+		"[migration]",
+	}
+
+	body := strings.ToLower(pr.Body)
+	for _, pattern := range migrationPatterns {
+		if strings.Contains(body, strings.ToLower(pattern)) {
+			return true
+		}
+	}
+
+	return false
+}
+
 // getStatusIcon returns the appropriate icon and status for a PR
 func getStatusIcon(pr PullRequest) string {
 	onHold := isOnHold(pr)
@@ -554,39 +600,49 @@ func getStatusIcon(pr PullRequest) string {
 	}
 }
 
-// getStatusIconWithTekton returns the appropriate icon and status for a PR, including Tekton info
+// getStatusIconWithTekton returns the appropriate icon and status for a PR, including Tekton and migration info
 func getStatusIconWithTekton(pr PullRequest, hasTektonFiles bool) string {
 	onHold := isOnHold(pr)
-	tektonIndicator := ""
+	hasMigration := hasMigrationWarning(pr)
+
+	var indicators []string
 	if hasTektonFiles {
-		tektonIndicator = ", tekton"
+		indicators = append(indicators, "tekton")
+	}
+	if hasMigration {
+		indicators = append(indicators, "migration")
+	}
+
+	indicatorStr := ""
+	if len(indicators) > 0 {
+		indicatorStr = ", " + strings.Join(indicators, ", ")
 	}
 
 	if pr.Draft {
 		if onHold {
-			return fmt.Sprintf("🟡 (draft, on hold%s)", tektonIndicator)
+			return fmt.Sprintf("🟡 (draft, on hold%s)", indicatorStr)
 		}
-		return fmt.Sprintf("🟡 (draft%s)", tektonIndicator)
+		return fmt.Sprintf("🟡 (draft%s)", indicatorStr)
 	}
 
 	switch pr.State {
 	case "open":
 		if onHold {
-			return fmt.Sprintf("🔶 (open, on hold%s)", tektonIndicator)
+			return fmt.Sprintf("🔶 (open, on hold%s)", indicatorStr)
 		}
-		if hasTektonFiles {
-			return fmt.Sprintf("🟢 (open, tekton)")
+		if hasTektonFiles || hasMigration {
+			return fmt.Sprintf("🟢 (open%s)", indicatorStr)
 		}
 		return "🟢 (open)"
 	case "closed":
-		return fmt.Sprintf("🔴 (closed%s)", tektonIndicator)
+		return fmt.Sprintf("🔴 (closed%s)", indicatorStr)
 	case "merged":
-		return fmt.Sprintf("🟣 (merged%s)", tektonIndicator)
+		return fmt.Sprintf("🟣 (merged%s)", indicatorStr)
 	default:
 		if onHold {
-			return fmt.Sprintf("⚪ (%s, on hold%s)", pr.State, tektonIndicator)
+			return fmt.Sprintf("⚪ (%s, on hold%s)", pr.State, indicatorStr)
 		}
-		return fmt.Sprintf("⚪ (%s%s)", pr.State, tektonIndicator)
+		return fmt.Sprintf("⚪ (%s%s)", pr.State, indicatorStr)
 	}
 }
 
@@ -604,4 +660,5 @@ func init() {
 	konfluxCmd.Flags().BoolVarP(&current, "current", "c", false, "Use current repository, bypass config")
 	konfluxCmd.Flags().BoolVarP(&approve, "approve", "a", false, "Interactively approve Konflux pull requests (review + /lgtm comment)")
 	konfluxCmd.Flags().BoolVarP(&tektonOnly, "tekton-only", "t", false, "Show only PRs that EXCLUSIVELY modify Tekton files (.tekton/*-pull-request.yaml or *-push.yaml)")
+	konfluxCmd.Flags().BoolVarP(&migrationOnly, "migration-only", "m", false, "Show only PRs that contain migration warnings")
 }
