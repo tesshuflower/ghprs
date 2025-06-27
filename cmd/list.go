@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -88,6 +89,7 @@ var (
 	current       bool
 	tektonOnly    bool
 	migrationOnly bool
+	sortBy        string
 )
 
 // listCmd represents the list command
@@ -105,7 +107,9 @@ Examples:
   ghprs list microsoft/vscode
   ghprs list --state closed
   ghprs list --limit 5
-  ghprs list --current                       # Force use current repo, bypass config`,
+  ghprs list --current                       # Force use current repo, bypass config
+  ghprs list --sort-by oldest               # Show oldest PRs first
+  ghprs list --sort-by updated               # Sort by last update`,
 	Run: func(cmd *cobra.Command, args []string) {
 		listPullRequests(args, "", false)
 	},
@@ -130,6 +134,8 @@ Examples:
   ghprs konflux --approve                    # Interactively approve Konflux PRs (review + /lgtm comment)
   ghprs konflux --tekton-only                # Show only PRs that EXCLUSIVELY modify Tekton files
   ghprs konflux --migration-only             # Show only PRs with migration warnings
+  ghprs konflux --sort-by priority           # Sort by priority (migration warnings first)
+  ghprs konflux --sort-by oldest             # Show oldest PRs first
   ghprs konflux owner/repo --approve         # Approve Konflux PRs in specific repo`,
 	Run: func(cmd *cobra.Command, args []string) {
 		listPullRequests(args, "red-hat-konflux[bot]", true)
@@ -234,6 +240,16 @@ func listPullRequests(args []string, authorFilter string, isKonflux bool) {
 			}
 		} else {
 			pullRequests = allPullRequests
+		}
+
+		// Sort PRs based on the specified sort option
+		if sortBy != "" {
+			sortPullRequests(pullRequests, sortBy)
+
+			// For Konflux PRs with priority sorting, do a more comprehensive sort
+			if isKonflux && sortBy == "priority" {
+				sortPullRequestsWithContext(pullRequests, *client, owner, repo, sortBy)
+			}
 		}
 
 		// Display results
@@ -646,6 +662,110 @@ func getStatusIconWithTekton(pr PullRequest, hasTektonFiles bool) string {
 	}
 }
 
+// sortPullRequests sorts PRs based on the specified sort option
+func sortPullRequests(prs []PullRequest, sortBy string) {
+	switch sortBy {
+	case "oldest":
+		// Sort by creation date ascending (oldest first)
+		sort.Slice(prs, func(i, j int) bool {
+			return prs[i].CreatedAt < prs[j].CreatedAt
+		})
+	case "updated":
+		// Sort by last update descending (most recently updated first)
+		sort.Slice(prs, func(i, j int) bool {
+			return prs[i].UpdatedAt > prs[j].UpdatedAt
+		})
+	case "number":
+		// Sort by PR number ascending (lowest numbers first)
+		sort.Slice(prs, func(i, j int) bool {
+			return prs[i].Number < prs[j].Number
+		})
+	case "priority":
+		// Custom priority sorting: migration warnings first, then others by creation date
+		sort.Slice(prs, func(i, j int) bool {
+			iMigration := hasMigrationWarning(prs[i])
+			jMigration := hasMigrationWarning(prs[j])
+
+			// Migration warnings have highest priority
+			if iMigration && !jMigration {
+				return true
+			}
+			if !iMigration && jMigration {
+				return false
+			}
+
+			// If both have same migration status, sort by creation date (newest first)
+			return prs[i].CreatedAt > prs[j].CreatedAt
+		})
+	case "newest":
+		fallthrough
+	default:
+		// Default: Sort by creation date descending (newest first) - GitHub's default
+		// No sorting needed as this is already the API default
+		return
+	}
+}
+
+// sortPullRequestsWithContext sorts PRs with full context including Tekton file information
+func sortPullRequestsWithContext(prs []PullRequest, client api.RESTClient, owner, repo string, sortBy string) {
+	if sortBy != "priority" {
+		return // Only apply context-aware sorting for priority mode
+	}
+
+	// Create a slice of PR info with additional context
+	type prInfo struct {
+		pr              PullRequest
+		hasMigration    bool
+		onlyTektonFiles bool
+	}
+
+	var prInfos []prInfo
+	for _, pr := range prs {
+		info := prInfo{
+			pr:           pr,
+			hasMigration: hasMigrationWarning(pr),
+		}
+
+		// Check Tekton files (this makes API calls, so only do it for priority sorting)
+		onlyTekton, _, err := checkTektonFilesDetailed(client, owner, repo, pr.Number)
+		if err == nil {
+			info.onlyTektonFiles = onlyTekton
+		}
+
+		prInfos = append(prInfos, info)
+	}
+
+	// Sort by priority: migration warnings first, then Tekton-only, then others
+	sort.Slice(prInfos, func(i, j int) bool {
+		iInfo := prInfos[i]
+		jInfo := prInfos[j]
+
+		// 1. Migration warnings have highest priority
+		if iInfo.hasMigration && !jInfo.hasMigration {
+			return true
+		}
+		if !iInfo.hasMigration && jInfo.hasMigration {
+			return false
+		}
+
+		// 2. If both have same migration status, Tekton-only PRs come next
+		if iInfo.onlyTektonFiles && !jInfo.onlyTektonFiles {
+			return true
+		}
+		if !iInfo.onlyTektonFiles && jInfo.onlyTektonFiles {
+			return false
+		}
+
+		// 3. If both have same migration and Tekton status, sort by creation date (newest first)
+		return iInfo.pr.CreatedAt > jInfo.pr.CreatedAt
+	})
+
+	// Copy back the sorted PRs
+	for i, info := range prInfos {
+		prs[i] = info.pr
+	}
+}
+
 func init() {
 	RootCmd.AddCommand(listCmd)
 	RootCmd.AddCommand(konfluxCmd)
@@ -654,6 +774,7 @@ func init() {
 	listCmd.Flags().StringVarP(&state, "state", "s", "open", "Filter by state: open, closed, all")
 	listCmd.Flags().IntVarP(&limit, "limit", "l", 30, "Maximum number of pull requests to show")
 	listCmd.Flags().BoolVarP(&current, "current", "c", false, "Use current repository, bypass config")
+	listCmd.Flags().StringVar(&sortBy, "sort-by", "", "Sort PRs by: newest (default), oldest, updated, number, priority")
 
 	konfluxCmd.Flags().StringVarP(&state, "state", "s", "open", "Filter by state: open, closed, all")
 	konfluxCmd.Flags().IntVarP(&limit, "limit", "l", 30, "Maximum number of pull requests to show")
@@ -661,4 +782,5 @@ func init() {
 	konfluxCmd.Flags().BoolVarP(&approve, "approve", "a", false, "Interactively approve Konflux pull requests (review + /lgtm comment)")
 	konfluxCmd.Flags().BoolVarP(&tektonOnly, "tekton-only", "t", false, "Show only PRs that EXCLUSIVELY modify Tekton files (.tekton/*-pull-request.yaml or *-push.yaml)")
 	konfluxCmd.Flags().BoolVarP(&migrationOnly, "migration-only", "m", false, "Show only PRs that contain migration warnings")
+	konfluxCmd.Flags().StringVar(&sortBy, "sort-by", "", "Sort PRs by: newest (default), oldest, updated, number, priority")
 }
