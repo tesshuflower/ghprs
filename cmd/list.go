@@ -28,18 +28,19 @@ with GitHub repositories and pull requests.`,
 
 // PullRequest represents a GitHub pull request
 type PullRequest struct {
-	Number         int    `json:"number"`
-	Title          string `json:"title"`
-	State          string `json:"state"`
-	User           User   `json:"user"`
-	Head           Branch `json:"head"`
-	Base           Branch `json:"base"`
-	Draft          bool   `json:"draft"`
-	CreatedAt      string `json:"created_at"`
-	UpdatedAt      string `json:"updated_at"`
-	HTMLURL        string `json:"html_url"`
-	Body           string `json:"body"`
-	MergeableState string `json:"mergeable_state"`
+	Number         int     `json:"number"`
+	Title          string  `json:"title"`
+	State          string  `json:"state"`
+	User           User    `json:"user"`
+	Head           Branch  `json:"head"`
+	Base           Branch  `json:"base"`
+	Draft          bool    `json:"draft"`
+	CreatedAt      string  `json:"created_at"`
+	UpdatedAt      string  `json:"updated_at"`
+	HTMLURL        string  `json:"html_url"`
+	Body           string  `json:"body"`
+	MergeableState string  `json:"mergeable_state"`
+	Labels         []Label `json:"labels"`
 }
 
 type User struct {
@@ -48,6 +49,10 @@ type User struct {
 
 type Branch struct {
 	Ref string `json:"ref"`
+}
+
+type Label struct {
+	Name string `json:"name"`
 }
 
 // ReviewRequest represents a pull request review request
@@ -228,8 +233,8 @@ func listPullRequests(args []string, authorFilter string, isKonflux bool) {
 
 		// Display PR list
 		for _, pr := range pullRequests {
-			// Color-code based on state and draft status
-			icon := getStateIcon(pr.State, pr.Draft)
+			// Color-code based on state, draft status, and hold status
+			icon := getStatusIcon(pr)
 			fmt.Printf("%s #%-4d %s\n", icon, pr.Number, pr.Title)
 			fmt.Printf("        %s → %s by @%s\n", pr.Head.Ref, pr.Base.Ref, pr.User.Login)
 			fmt.Printf("        %s\n\n", pr.HTMLURL)
@@ -253,6 +258,13 @@ func approveKonfluxPRs(client api.RESTClient, owner, repo string, pullRequests [
 		// Skip draft PRs
 		if pr.Draft {
 			fmt.Printf("⏭️  Skipping #%d (draft): %s\n", pr.Number, pr.Title)
+			skippedCount++
+			continue
+		}
+
+		// Skip PRs that are on hold
+		if isOnHold(pr) {
+			fmt.Printf("⏭️  Skipping #%d (on hold): %s\n", pr.Number, pr.Title)
 			skippedCount++
 			continue
 		}
@@ -330,6 +342,45 @@ func getStateIcon(state string, isDraft bool) string {
 		return "🟣 (merged)"
 	default:
 		return "⚪ (" + state + ")"
+	}
+}
+
+// isOnHold checks if a PR has the "do-not-merge/hold" label
+func isOnHold(pr PullRequest) bool {
+	for _, label := range pr.Labels {
+		if label.Name == "do-not-merge/hold" {
+			return true
+		}
+	}
+	return false
+}
+
+// getStatusIcon returns the appropriate icon and status for a PR
+func getStatusIcon(pr PullRequest) string {
+	onHold := isOnHold(pr)
+
+	if pr.Draft {
+		if onHold {
+			return "🟡 (draft, on hold)"
+		}
+		return "🟡 (draft)"
+	}
+
+	switch pr.State {
+	case "open":
+		if onHold {
+			return "🔶 (open, on hold)"
+		}
+		return "🟢 (open)"
+	case "closed":
+		return "🔴 (closed)"
+	case "merged":
+		return "🟣 (merged)"
+	default:
+		if onHold {
+			return "⚪ (" + pr.State + ", on hold)"
+		}
+		return "⚪ (" + pr.State + ")"
 	}
 }
 
