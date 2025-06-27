@@ -90,6 +90,7 @@ var (
 	tektonOnly    bool
 	migrationOnly bool
 	sortBy        string
+	showFiles     bool
 )
 
 // listCmd represents the list command
@@ -136,6 +137,8 @@ Examples:
   ghprs konflux --migration-only             # Show only PRs with migration warnings
   ghprs konflux --sort-by priority           # Sort by priority (migration warnings first)
   ghprs konflux --sort-by oldest             # Show oldest PRs first
+  ghprs konflux --approve --show-files       # Approve with detailed file lists
+  ghprs konflux --approve                    # Interactive approval (use 'f' to view files)
   ghprs konflux owner/repo --approve         # Approve Konflux PRs in specific repo`,
 	Run: func(cmd *cobra.Command, args []string) {
 		listPullRequests(args, "red-hat-konflux[bot]", true)
@@ -335,10 +338,25 @@ func promptForApproval(pr PullRequest, owner, repo string, client api.RESTClient
 	fmt.Printf("   Branch: %s → %s\n", pr.Head.Ref, pr.Base.Ref)
 	fmt.Printf("   URL: %s\n", pr.HTMLURL)
 
+	// Get file count (and optionally display files if --show-files is used)
+	filesPath := fmt.Sprintf("repos/%s/%s/pulls/%d/files", owner, repo, pr.Number)
+	var allFiles []PRFile
+	err := client.Get(filesPath, &allFiles)
+	if err != nil {
+		fmt.Printf("   ⚠️  Could not fetch file list: %v\n", err)
+	} else {
+		if showFiles {
+			fmt.Printf("   📁 Files changed (%d):\n", len(allFiles))
+			displayFileList(allFiles)
+		} else {
+			fmt.Printf("   📁 Files changed: %d (press 'f' during approval to view)\n", len(allFiles))
+		}
+	}
+
 	// Check for Tekton files
 	onlyTektonFiles, tektonFiles, err := checkTektonFilesDetailed(client, owner, repo, pr.Number)
 	if err != nil {
-		fmt.Printf("   ⚠️  Could not check files: %v\n", err)
+		fmt.Printf("   ⚠️  Could not check Tekton files: %v\n", err)
 	} else if onlyTektonFiles {
 		fmt.Printf("   ✅ ONLY modifies Tekton files: %s\n", strings.Join(tektonFiles, ", "))
 	} else {
@@ -355,32 +373,60 @@ func promptForApproval(pr PullRequest, owner, repo string, client api.RESTClient
 		fmt.Printf("   ⚠️  Status: ON HOLD (has 'do-not-merge/hold' label)\n")
 	}
 
-	fmt.Printf("\nApprove this PR? [y/N/q]: ")
-
-	reader := bufio.NewReader(os.Stdin)
-	response, err := reader.ReadString('\n')
-	if err != nil {
-		// Handle EOF gracefully (e.g., when input is piped and runs out)
-		if err == io.EOF {
-			fmt.Printf("(EOF - exiting approval process)\n")
-			os.Exit(0)
+	for {
+		if showFiles {
+			fmt.Printf("\nApprove this PR? [y/N/q]: ")
+		} else {
+			fmt.Printf("\nApprove this PR? [y/N/q/f] (f=show files): ")
 		}
-		fmt.Printf("Error reading input: %v (skipping PR)\n", err)
-		return false
-	}
 
-	response = strings.TrimSpace(strings.ToLower(response))
+		reader := bufio.NewReader(os.Stdin)
+		response, err := reader.ReadString('\n')
+		if err != nil {
+			// Handle EOF gracefully (e.g., when input is piped and runs out)
+			if err == io.EOF {
+				fmt.Printf("(EOF - exiting approval process)\n")
+				os.Exit(0)
+			}
+			fmt.Printf("Error reading input: %v (skipping PR)\n", err)
+			return false
+		}
 
-	switch response {
-	case "y", "yes":
-		return true
-	case "q", "quit":
-		fmt.Println("Quitting approval process.")
-		os.Exit(0)
-		return false // This won't be reached but satisfies the compiler
-	default:
-		fmt.Printf("Skipping PR #%d\n", pr.Number)
-		return false
+		response = strings.TrimSpace(strings.ToLower(response))
+
+		switch response {
+		case "y", "yes":
+			return true
+		case "q", "quit":
+			fmt.Println("Quitting approval process.")
+			os.Exit(0)
+			return false // This won't be reached but satisfies the compiler
+		case "f", "files":
+			if showFiles {
+				fmt.Printf("\n📁 File list already shown above.\n")
+			} else {
+				// Show detailed file list
+				fmt.Printf("\n📁 Detailed file list for PR #%d:\n", pr.Number)
+				filesPath := fmt.Sprintf("repos/%s/%s/pulls/%d/files", owner, repo, pr.Number)
+				var files []PRFile
+				err := client.Get(filesPath, &files)
+				if err != nil {
+					fmt.Printf("   ❌ Could not fetch file list: %v\n", err)
+				} else {
+					displayFileList(files)
+					fmt.Printf("\nTotal: %d files changed\n", len(files))
+				}
+			}
+			// Continue the loop to ask again
+			continue
+		case "", "n", "no":
+			fmt.Printf("Skipping PR #%d\n", pr.Number)
+			return false
+		default:
+			fmt.Printf("Invalid option '%s'. Please choose y/N/q/f.\n", response)
+			// Continue the loop to ask again
+			continue
+		}
 	}
 }
 
@@ -391,7 +437,11 @@ func approveKonfluxPRs(client api.RESTClient, owner, repo string, pullRequests [
 	userSkippedCount := 0
 
 	fmt.Printf("\n🎯 Interactive approval mode for %d Konflux PRs\n", len(pullRequests))
-	fmt.Printf("Commands: [y]es to approve, [N]o to skip (default), [q]uit\n")
+	if showFiles {
+		fmt.Printf("Commands: [y]es to approve, [N]o to skip (default), [q]uit\n")
+	} else {
+		fmt.Printf("Commands: [y]es to approve, [N]o to skip (default), [q]uit, [f]iles to view\n")
+	}
 	fmt.Printf("═══════════════════════════════════════════════════════════════\n")
 
 	for _, pr := range pullRequests {
@@ -766,6 +816,32 @@ func sortPullRequestsWithContext(prs []PullRequest, client api.RESTClient, owner
 	}
 }
 
+// displayFileList shows a formatted list of files with status indicators
+func displayFileList(files []PRFile) {
+	for _, file := range files {
+		status := ""
+		statusColor := ""
+		switch file.Status {
+		case "added":
+			status = "+"
+			statusColor = "🟢"
+		case "modified":
+			status = "~"
+			statusColor = "🟡"
+		case "removed":
+			status = "-"
+			statusColor = "🔴"
+		case "renamed":
+			status = "→"
+			statusColor = "🔵"
+		default:
+			status = "?"
+			statusColor = "⚪"
+		}
+		fmt.Printf("      %s %s %s\n", statusColor, status, file.Filename)
+	}
+}
+
 func init() {
 	RootCmd.AddCommand(listCmd)
 	RootCmd.AddCommand(konfluxCmd)
@@ -775,6 +851,7 @@ func init() {
 	listCmd.Flags().IntVarP(&limit, "limit", "l", 30, "Maximum number of pull requests to show")
 	listCmd.Flags().BoolVarP(&current, "current", "c", false, "Use current repository, bypass config")
 	listCmd.Flags().StringVar(&sortBy, "sort-by", "", "Sort PRs by: newest (default), oldest, updated, number, priority")
+	listCmd.Flags().BoolVarP(&showFiles, "show-files", "f", false, "Show detailed file list during approval process")
 
 	konfluxCmd.Flags().StringVarP(&state, "state", "s", "open", "Filter by state: open, closed, all")
 	konfluxCmd.Flags().IntVarP(&limit, "limit", "l", 30, "Maximum number of pull requests to show")
@@ -783,4 +860,5 @@ func init() {
 	konfluxCmd.Flags().BoolVarP(&tektonOnly, "tekton-only", "t", false, "Show only PRs that EXCLUSIVELY modify Tekton files (.tekton/*-pull-request.yaml or *-push.yaml)")
 	konfluxCmd.Flags().BoolVarP(&migrationOnly, "migration-only", "m", false, "Show only PRs that contain migration warnings")
 	konfluxCmd.Flags().StringVar(&sortBy, "sort-by", "", "Sort PRs by: newest (default), oldest, updated, number, priority")
+	konfluxCmd.Flags().BoolVarP(&showFiles, "show-files", "f", false, "Show detailed file list during approval process")
 }
