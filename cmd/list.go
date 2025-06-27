@@ -75,11 +75,18 @@ type Review struct {
 	User  User   `json:"user"`
 }
 
+// PRFile represents a file changed in a pull request
+type PRFile struct {
+	Filename string `json:"filename"`
+	Status   string `json:"status"` // "added", "modified", "removed", etc.
+}
+
 var (
-	state   string
-	limit   int
-	approve bool
-	current bool
+	state      string
+	limit      int
+	approve    bool
+	current    bool
+	tektonOnly bool
 )
 
 // listCmd represents the list command
@@ -120,6 +127,7 @@ Examples:
   ghprs konflux --limit 5
   ghprs konflux --current                    # Force use current repo, bypass config
   ghprs konflux --approve                    # Interactively approve Konflux PRs (review + /lgtm comment)
+  ghprs konflux --tekton-only                # Show only PRs that EXCLUSIVELY modify Tekton files
   ghprs konflux owner/repo --approve         # Approve Konflux PRs in specific repo`,
 	Run: func(cmd *cobra.Command, args []string) {
 		listPullRequests(args, "red-hat-konflux[bot]", true)
@@ -253,22 +261,57 @@ func listPullRequests(args []string, authorFilter string, isKonflux bool) {
 
 		// Display PR list
 		for _, pr := range pullRequests {
-			// Color-code based on state, draft status, and hold status
-			icon := getStatusIcon(pr)
+			// Check for Tekton files if this is a Konflux PR
+			onlyTektonFiles := false
+			var tektonFiles []string
+			if isKonflux {
+				var err error
+				onlyTektonFiles, tektonFiles, err = checkTektonFilesDetailed(*client, owner, repo, pr.Number)
+				if err != nil {
+					fmt.Printf("⚠️  Could not check files for PR #%d: %v\n", pr.Number, err)
+				}
+			}
+
+			// Skip PRs that don't exclusively modify Tekton files if --tekton-only flag is set
+			if tektonOnly && !onlyTektonFiles {
+				continue
+			}
+
+			// Color-code based on state, draft status, hold status, and Tekton files
+			var icon string
+			if isKonflux {
+				icon = getStatusIconWithTekton(pr, onlyTektonFiles)
+			} else {
+				icon = getStatusIcon(pr)
+			}
+
 			fmt.Printf("%s #%-4d %s\n", icon, pr.Number, pr.Title)
 			fmt.Printf("        %s → %s by @%s\n", pr.Head.Ref, pr.Base.Ref, pr.User.Login)
+			if isKonflux && onlyTektonFiles && len(tektonFiles) > 0 {
+				fmt.Printf("        📁 Tekton-only files: %s\n", strings.Join(tektonFiles, ", "))
+			}
 			fmt.Printf("        %s\n\n", pr.HTMLURL)
 		}
 	}
 }
 
 // promptForApproval prompts the user to approve a specific PR
-func promptForApproval(pr PullRequest, owner, repo string) bool {
+func promptForApproval(pr PullRequest, owner, repo string, client api.RESTClient) bool {
 	fmt.Printf("\n🔍 Review PR #%d:\n", pr.Number)
 	fmt.Printf("   Title: %s\n", pr.Title)
 	fmt.Printf("   Author: @%s\n", pr.User.Login)
 	fmt.Printf("   Branch: %s → %s\n", pr.Head.Ref, pr.Base.Ref)
 	fmt.Printf("   URL: %s\n", pr.HTMLURL)
+
+	// Check for Tekton files
+	onlyTektonFiles, tektonFiles, err := checkTektonFilesDetailed(client, owner, repo, pr.Number)
+	if err != nil {
+		fmt.Printf("   ⚠️  Could not check files: %v\n", err)
+	} else if onlyTektonFiles {
+		fmt.Printf("   ✅ ONLY modifies Tekton files: %s\n", strings.Join(tektonFiles, ", "))
+	} else {
+		fmt.Printf("   ❌ Does NOT exclusively modify target Tekton files\n")
+	}
 
 	// Show hold status if applicable
 	if isOnHold(pr) {
@@ -363,7 +406,7 @@ func approveKonfluxPRs(client api.RESTClient, owner, repo string, pullRequests [
 		}
 
 		// Prompt user for approval decision
-		if !promptForApproval(pr, owner, repo) {
+		if !promptForApproval(pr, owner, repo, client) {
 			userSkippedCount++
 			continue
 		}
@@ -450,6 +493,38 @@ func isOnHold(pr PullRequest) bool {
 	return false
 }
 
+// checkTektonFilesDetailed checks if a PR ONLY modifies specific Tekton files and returns the list
+func checkTektonFilesDetailed(client api.RESTClient, owner, repo string, prNumber int) (bool, []string, error) {
+	filesPath := fmt.Sprintf("repos/%s/%s/pulls/%d/files", owner, repo, prNumber)
+	var files []PRFile
+	err := client.Get(filesPath, &files)
+	if err != nil {
+		return false, nil, err
+	}
+
+	var tektonFiles []string
+	var nonTektonFiles []string
+
+	for _, file := range files {
+		// Check if file is in .tekton/ directory and matches our patterns
+		if strings.HasPrefix(file.Filename, ".tekton/") {
+			if strings.HasSuffix(file.Filename, "-pull-request.yaml") || strings.HasSuffix(file.Filename, "-push.yaml") {
+				tektonFiles = append(tektonFiles, file.Filename)
+			} else {
+				// File is in .tekton/ but doesn't match our patterns
+				nonTektonFiles = append(nonTektonFiles, file.Filename)
+			}
+		} else {
+			// File is not in .tekton/ directory
+			nonTektonFiles = append(nonTektonFiles, file.Filename)
+		}
+	}
+
+	// Return true only if we have target Tekton files AND no other files
+	onlyTektonFiles := len(tektonFiles) > 0 && len(nonTektonFiles) == 0
+	return onlyTektonFiles, tektonFiles, nil
+}
+
 // getStatusIcon returns the appropriate icon and status for a PR
 func getStatusIcon(pr PullRequest) string {
 	onHold := isOnHold(pr)
@@ -479,6 +554,42 @@ func getStatusIcon(pr PullRequest) string {
 	}
 }
 
+// getStatusIconWithTekton returns the appropriate icon and status for a PR, including Tekton info
+func getStatusIconWithTekton(pr PullRequest, hasTektonFiles bool) string {
+	onHold := isOnHold(pr)
+	tektonIndicator := ""
+	if hasTektonFiles {
+		tektonIndicator = ", tekton"
+	}
+
+	if pr.Draft {
+		if onHold {
+			return fmt.Sprintf("🟡 (draft, on hold%s)", tektonIndicator)
+		}
+		return fmt.Sprintf("🟡 (draft%s)", tektonIndicator)
+	}
+
+	switch pr.State {
+	case "open":
+		if onHold {
+			return fmt.Sprintf("🔶 (open, on hold%s)", tektonIndicator)
+		}
+		if hasTektonFiles {
+			return fmt.Sprintf("🟢 (open, tekton)")
+		}
+		return "🟢 (open)"
+	case "closed":
+		return fmt.Sprintf("🔴 (closed%s)", tektonIndicator)
+	case "merged":
+		return fmt.Sprintf("🟣 (merged%s)", tektonIndicator)
+	default:
+		if onHold {
+			return fmt.Sprintf("⚪ (%s, on hold%s)", pr.State, tektonIndicator)
+		}
+		return fmt.Sprintf("⚪ (%s%s)", pr.State, tektonIndicator)
+	}
+}
+
 func init() {
 	RootCmd.AddCommand(listCmd)
 	RootCmd.AddCommand(konfluxCmd)
@@ -492,4 +603,5 @@ func init() {
 	konfluxCmd.Flags().IntVarP(&limit, "limit", "l", 30, "Maximum number of pull requests to show")
 	konfluxCmd.Flags().BoolVarP(&current, "current", "c", false, "Use current repository, bypass config")
 	konfluxCmd.Flags().BoolVarP(&approve, "approve", "a", false, "Interactively approve Konflux pull requests (review + /lgtm comment)")
+	konfluxCmd.Flags().BoolVarP(&tektonOnly, "tekton-only", "t", false, "Show only PRs that EXCLUSIVELY modify Tekton files (.tekton/*-pull-request.yaml or *-push.yaml)")
 }
