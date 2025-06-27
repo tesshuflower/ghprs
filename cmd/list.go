@@ -71,6 +71,7 @@ var (
 	state   string
 	limit   int
 	approve bool
+	current bool
 )
 
 // listCmd represents the list command
@@ -79,14 +80,16 @@ var listCmd = &cobra.Command{
 	Short: "List pull requests for a repository",
 	Long: `List pull requests for a GitHub repository.
 
-If no repository is specified, the current repository will be detected from git remotes.
+If no repository is specified, configured default repositories will be used.
+If no default repositories are configured, the current repository will be detected from git remotes.
 You can also specify a repository in the format "owner/repo".
 
 Examples:
   ghprs list
   ghprs list microsoft/vscode
   ghprs list --state closed
-  ghprs list --limit 5`,
+  ghprs list --limit 5
+  ghprs list --current                       # Force use current repo, bypass config`,
 	Run: func(cmd *cobra.Command, args []string) {
 		listPullRequests(args, "", false)
 	},
@@ -98,7 +101,8 @@ var konfluxCmd = &cobra.Command{
 	Short: "List Konflux pull requests (authored by red-hat-konflux[bot])",
 	Long: `List pull requests authored by "red-hat-konflux[bot]" for a GitHub repository.
 
-If no repository is specified, the current repository will be detected from git remotes.
+If no repository is specified, configured default repositories will be used.
+If no default repositories are configured, the current repository will be detected from git remotes.
 You can also specify a repository in the format "owner/repo".
 
 Examples:
@@ -106,6 +110,7 @@ Examples:
   ghprs konflux microsoft/vscode
   ghprs konflux --state closed
   ghprs konflux --limit 5
+  ghprs konflux --current                    # Force use current repo, bypass config
   ghprs konflux --approve                    # Approve all open Konflux PRs
   ghprs konflux owner/repo --approve         # Approve Konflux PRs in specific repo`,
 	Run: func(cmd *cobra.Command, args []string) {
@@ -134,6 +139,13 @@ func listPullRequests(args []string, authorFilter string, isKonflux bool) {
 	if len(args) > 0 {
 		// Use specified repository
 		repositories = []string{args[0]}
+	} else if current {
+		// Force use of current repository when --current flag is set
+		if currentRepo, err := repository.Current(); err == nil {
+			repositories = []string{fmt.Sprintf("%s/%s", currentRepo.Owner, currentRepo.Name)}
+		} else {
+			log.Fatal("Could not detect current repository. Make sure you're in a git repository.")
+		}
 	} else {
 		// Use configured repositories first, then fall back to auto-detection
 		if len(config.Repositories) > 0 {
@@ -391,8 +403,10 @@ func init() {
 	// Add flags to both commands
 	listCmd.Flags().StringVarP(&state, "state", "s", "open", "Filter by state: open, closed, all")
 	listCmd.Flags().IntVarP(&limit, "limit", "l", 30, "Maximum number of pull requests to show")
+	listCmd.Flags().BoolVarP(&current, "current", "c", false, "Use current repository, bypass config")
 
 	konfluxCmd.Flags().StringVarP(&state, "state", "s", "open", "Filter by state: open, closed, all")
 	konfluxCmd.Flags().IntVarP(&limit, "limit", "l", 30, "Maximum number of pull requests to show")
+	konfluxCmd.Flags().BoolVarP(&current, "current", "c", false, "Use current repository, bypass config")
 	konfluxCmd.Flags().BoolVarP(&approve, "approve", "a", false, "Approve all open Konflux pull requests")
 }
