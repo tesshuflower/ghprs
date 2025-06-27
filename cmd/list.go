@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"sort"
 	"strconv"
@@ -15,6 +16,7 @@ import (
 	"github.com/cli/go-gh/v2/pkg/api"
 	"github.com/cli/go-gh/v2/pkg/repository"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 // RootCmd represents the base command when called without any subcommands
@@ -91,6 +93,8 @@ var (
 	migrationOnly bool
 	sortBy        string
 	showFiles     bool
+	showDiff      bool
+	noColor       bool
 )
 
 // listCmd represents the list command
@@ -138,7 +142,9 @@ Examples:
   ghprs konflux --sort-by priority           # Sort by priority (migration warnings first)
   ghprs konflux --sort-by oldest             # Show oldest PRs first
   ghprs konflux --approve --show-files       # Approve with detailed file lists
-  ghprs konflux --approve                    # Interactive approval (use 'f' to view files)
+  ghprs konflux --approve --show-diff        # Approve with detailed diff display
+  ghprs konflux --approve --show-diff --no-color  # Approve with diff but no colors
+  ghprs konflux --approve                    # Interactive approval (use 'f' to view files, 'd' to view diff)
   ghprs konflux owner/repo --approve         # Approve Konflux PRs in specific repo`,
 	Run: func(cmd *cobra.Command, args []string) {
 		listPullRequests(args, "red-hat-konflux[bot]", true)
@@ -353,6 +359,14 @@ func promptForApproval(pr PullRequest, owner, repo string, client api.RESTClient
 		}
 	}
 
+	// Optionally display diff if --show-diff is used
+	if showDiff {
+		err := displayDiff(client, owner, repo, pr.Number)
+		if err != nil {
+			fmt.Printf("   ⚠️  Could not fetch diff: %v\n", err)
+		}
+	}
+
 	// Check for Tekton files
 	onlyTektonFiles, tektonFiles, err := checkTektonFilesDetailed(client, owner, repo, pr.Number)
 	if err != nil {
@@ -374,11 +388,26 @@ func promptForApproval(pr PullRequest, owner, repo string, client api.RESTClient
 	}
 
 	for {
-		if showFiles {
-			fmt.Printf("\nApprove this PR? [y/N/q]: ")
-		} else {
-			fmt.Printf("\nApprove this PR? [y/N/q/f] (f=show files): ")
+		// Build prompt based on what's already shown
+		promptOptions := []string{"y/N/q"}
+		promptHelp := []string{}
+
+		if !showFiles {
+			promptOptions = append(promptOptions, "f")
+			promptHelp = append(promptHelp, "f=show files")
 		}
+		if !showDiff {
+			promptOptions = append(promptOptions, "d")
+			promptHelp = append(promptHelp, "d=show diff")
+		}
+
+		promptStr := fmt.Sprintf("\nApprove this PR? [%s]", strings.Join(promptOptions, "/"))
+		if len(promptHelp) > 0 {
+			promptStr += fmt.Sprintf(" (%s)", strings.Join(promptHelp, ", "))
+		}
+		promptStr += ": "
+
+		fmt.Printf(promptStr)
 
 		reader := bufio.NewReader(os.Stdin)
 		response, err := reader.ReadString('\n')
@@ -419,11 +448,23 @@ func promptForApproval(pr PullRequest, owner, repo string, client api.RESTClient
 			}
 			// Continue the loop to ask again
 			continue
+		case "d", "diff":
+			if showDiff {
+				fmt.Printf("\n📄 Diff already shown above.\n")
+			} else {
+				// Show diff
+				err := displayDiff(client, owner, repo, pr.Number)
+				if err != nil {
+					fmt.Printf("   ❌ Could not fetch diff: %v\n", err)
+				}
+			}
+			// Continue the loop to ask again
+			continue
 		case "", "n", "no":
 			fmt.Printf("Skipping PR #%d\n", pr.Number)
 			return false
 		default:
-			fmt.Printf("Invalid option '%s'. Please choose y/N/q/f.\n", response)
+			fmt.Printf("Invalid option '%s'. Please choose from the available options.\n", response)
 			// Continue the loop to ask again
 			continue
 		}
@@ -437,11 +478,17 @@ func approveKonfluxPRs(client api.RESTClient, owner, repo string, pullRequests [
 	userSkippedCount := 0
 
 	fmt.Printf("\n🎯 Interactive approval mode for %d Konflux PRs\n", len(pullRequests))
-	if showFiles {
-		fmt.Printf("Commands: [y]es to approve, [N]o to skip (default), [q]uit\n")
-	} else {
-		fmt.Printf("Commands: [y]es to approve, [N]o to skip (default), [q]uit, [f]iles to view\n")
+
+	// Build help message based on what's already shown
+	helpOptions := []string{"[y]es to approve", "[N]o to skip (default)", "[q]uit"}
+	if !showFiles {
+		helpOptions = append(helpOptions, "[f]iles to view")
 	}
+	if !showDiff {
+		helpOptions = append(helpOptions, "[d]iff to view")
+	}
+
+	fmt.Printf("Commands: %s\n", strings.Join(helpOptions, ", "))
 	fmt.Printf("═══════════════════════════════════════════════════════════════\n")
 
 	for _, pr := range pullRequests {
@@ -842,6 +889,124 @@ func displayFileList(files []PRFile) {
 	}
 }
 
+// displayDiff shows the diff content for a PR with color coding
+func displayDiff(client api.RESTClient, owner, repo string, prNumber int) error {
+	// Construct the diff URL manually
+	diffURL := fmt.Sprintf("https://github.com/%s/%s/pull/%d.diff", owner, repo, prNumber)
+
+	// Make HTTP request to get the diff content
+	resp, err := http.Get(diffURL)
+	if err != nil {
+		return fmt.Errorf("failed to fetch diff: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("failed to fetch diff: HTTP %d", resp.StatusCode)
+	}
+
+	// Read the diff content
+	diffContent, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read diff: %v", err)
+	}
+
+	// Display the diff with color coding
+	fmt.Printf("\n📄 Diff for PR #%d:\n", prNumber)
+	fmt.Printf("═══════════════════════════════════════════════════════════════\n")
+
+	// Apply color coding to the diff (unless colors are disabled)
+	if shouldUseColors() {
+		colorizedDiff := colorizeGitDiff(string(diffContent))
+		fmt.Print(colorizedDiff)
+	} else {
+		fmt.Print(string(diffContent))
+	}
+
+	fmt.Printf("═══════════════════════════════════════════════════════════════\n")
+
+	return nil
+}
+
+// colorizeGitDiff adds ANSI color codes to diff output similar to git diff
+func colorizeGitDiff(diff string) string {
+	// ANSI color codes
+	const (
+		reset   = "\033[0m"
+		bold    = "\033[1m"
+		red     = "\033[31m"
+		green   = "\033[32m"
+		yellow  = "\033[33m"
+		blue    = "\033[34m"
+		magenta = "\033[35m"
+		cyan    = "\033[36m"
+		white   = "\033[37m"
+		dimGray = "\033[90m"
+	)
+
+	lines := strings.Split(diff, "\n")
+	var colorizedLines []string
+
+	for _, line := range lines {
+		switch {
+		case strings.HasPrefix(line, "diff --git"):
+			// File header - bold white
+			colorizedLines = append(colorizedLines, bold+white+line+reset)
+		case strings.HasPrefix(line, "index "):
+			// Index line - dim gray
+			colorizedLines = append(colorizedLines, dimGray+line+reset)
+		case strings.HasPrefix(line, "--- "):
+			// Old file - red
+			colorizedLines = append(colorizedLines, red+line+reset)
+		case strings.HasPrefix(line, "+++ "):
+			// New file - green
+			colorizedLines = append(colorizedLines, green+line+reset)
+		case strings.HasPrefix(line, "@@"):
+			// Hunk header - cyan
+			colorizedLines = append(colorizedLines, cyan+line+reset)
+		case strings.HasPrefix(line, "+"):
+			// Added lines - green
+			colorizedLines = append(colorizedLines, green+line+reset)
+		case strings.HasPrefix(line, "-"):
+			// Removed lines - red
+			colorizedLines = append(colorizedLines, red+line+reset)
+		case strings.HasPrefix(line, "new file mode"):
+			// New file mode - green
+			colorizedLines = append(colorizedLines, green+line+reset)
+		case strings.HasPrefix(line, "deleted file mode"):
+			// Deleted file mode - red
+			colorizedLines = append(colorizedLines, red+line+reset)
+		case strings.HasPrefix(line, "rename from") || strings.HasPrefix(line, "rename to"):
+			// Rename operations - yellow
+			colorizedLines = append(colorizedLines, yellow+line+reset)
+		case strings.HasPrefix(line, "similarity index") || strings.HasPrefix(line, "dissimilarity index"):
+			// Similarity index - dim gray
+			colorizedLines = append(colorizedLines, dimGray+line+reset)
+		default:
+			// Context lines - no color
+			colorizedLines = append(colorizedLines, line)
+		}
+	}
+
+	return strings.Join(colorizedLines, "\n")
+}
+
+// shouldUseColors determines if we should colorize output
+func shouldUseColors() bool {
+	// If user explicitly disabled colors, respect that
+	if noColor {
+		return false
+	}
+
+	// Check if NO_COLOR environment variable is set (standard convention)
+	if os.Getenv("NO_COLOR") != "" {
+		return false
+	}
+
+	// Check if output is going to a terminal
+	return term.IsTerminal(int(os.Stdout.Fd()))
+}
+
 func init() {
 	RootCmd.AddCommand(listCmd)
 	RootCmd.AddCommand(konfluxCmd)
@@ -852,6 +1017,8 @@ func init() {
 	listCmd.Flags().BoolVarP(&current, "current", "c", false, "Use current repository, bypass config")
 	listCmd.Flags().StringVar(&sortBy, "sort-by", "", "Sort PRs by: newest (default), oldest, updated, number, priority")
 	listCmd.Flags().BoolVarP(&showFiles, "show-files", "f", false, "Show detailed file list during approval process")
+	listCmd.Flags().BoolVarP(&showDiff, "show-diff", "d", false, "Show detailed diff during approval process")
+	listCmd.Flags().BoolVar(&noColor, "no-color", false, "Disable color output in diff display")
 
 	konfluxCmd.Flags().StringVarP(&state, "state", "s", "open", "Filter by state: open, closed, all")
 	konfluxCmd.Flags().IntVarP(&limit, "limit", "l", 30, "Maximum number of pull requests to show")
@@ -861,4 +1028,6 @@ func init() {
 	konfluxCmd.Flags().BoolVarP(&migrationOnly, "migration-only", "m", false, "Show only PRs that contain migration warnings")
 	konfluxCmd.Flags().StringVar(&sortBy, "sort-by", "", "Sort PRs by: newest (default), oldest, updated, number, priority")
 	konfluxCmd.Flags().BoolVarP(&showFiles, "show-files", "f", false, "Show detailed file list during approval process")
+	konfluxCmd.Flags().BoolVarP(&showDiff, "show-diff", "d", false, "Show detailed diff during approval process")
+	konfluxCmd.Flags().BoolVar(&noColor, "no-color", false, "Disable color output in diff display")
 }
