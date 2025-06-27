@@ -84,6 +84,11 @@ type PRFile struct {
 	Status   string `json:"status"` // "added", "modified", "removed", etc.
 }
 
+// LabelRequest represents a request to add labels to an issue/PR
+type LabelRequest struct {
+	Labels []string `json:"labels"`
+}
+
 var (
 	state         string
 	limit         int
@@ -356,7 +361,16 @@ func listPullRequests(args []string, authorFilter string, isKonflux bool) {
 }
 
 // promptForApproval prompts the user to approve a specific PR with configurable behavior
-func promptForApproval(pr PullRequest, owner, repo string, client api.RESTClient, config ApprovalConfig) bool {
+// ApprovalResult represents the result of the approval prompt
+type ApprovalResult int
+
+const (
+	ApprovalResultSkip ApprovalResult = iota
+	ApprovalResultApprove
+	ApprovalResultHold
+)
+
+func promptForApproval(pr PullRequest, owner, repo string, client api.RESTClient, config ApprovalConfig) ApprovalResult {
 	fmt.Printf("\n🔍 Review PR #%d:\n", pr.Number)
 	fmt.Printf("   Title: %s\n", pr.Title)
 	fmt.Printf("   Author: @%s\n", pr.User.Login)
@@ -411,8 +425,8 @@ func promptForApproval(pr PullRequest, owner, repo string, client api.RESTClient
 
 	for {
 		// Build prompt based on what's already shown
-		promptOptions := []string{"y/N/q"}
-		promptHelp := []string{}
+		promptOptions := []string{"y/N/q/h"}
+		promptHelp := []string{"h=hold"}
 
 		if !showFiles {
 			promptOptions = append(promptOptions, "f")
@@ -440,18 +454,38 @@ func promptForApproval(pr PullRequest, owner, repo string, client api.RESTClient
 				os.Exit(0)
 			}
 			fmt.Printf("Error reading input: %v (skipping PR)\n", err)
-			return false
+			return ApprovalResultSkip
 		}
 
 		response = strings.TrimSpace(strings.ToLower(response))
 
 		switch response {
 		case "y", "yes":
-			return true
+			return ApprovalResultApprove
 		case "q", "quit":
 			fmt.Println("Quitting approval process.")
 			os.Exit(0)
-			return false // This won't be reached but satisfies the compiler
+			return ApprovalResultSkip // This won't be reached but satisfies the compiler
+		case "h", "hold":
+			// Prompt for additional comment
+			fmt.Printf("Enter an optional comment to add with /hold (or press Enter for none): ")
+			reader := bufio.NewReader(os.Stdin)
+			additionalComment, err := reader.ReadString('\n')
+			if err != nil {
+				fmt.Printf("Error reading comment: %v\n", err)
+				additionalComment = ""
+			}
+			additionalComment = strings.TrimSpace(additionalComment)
+
+			// Hold the PR
+			err = holdPR(client, owner, repo, pr.Number, additionalComment)
+			if err != nil {
+				fmt.Printf("❌ Failed to hold PR #%d: %v\n", pr.Number, err)
+				continue // Let user try again
+			}
+
+			fmt.Printf("⏸️  Put PR #%d on hold\n", pr.Number)
+			return ApprovalResultHold
 		case "f", "files":
 			if showFiles {
 				fmt.Printf("\n📁 File list already shown above.\n")
@@ -484,7 +518,7 @@ func promptForApproval(pr PullRequest, owner, repo string, client api.RESTClient
 			continue
 		case "", "n", "no":
 			fmt.Printf("Skipping PR #%d\n", pr.Number)
-			return false
+			return ApprovalResultSkip
 		default:
 			fmt.Printf("Invalid option '%s'. Please choose from the available options.\n", response)
 			// Continue the loop to ask again
@@ -498,6 +532,7 @@ func approvePRsWithConfig(client api.RESTClient, owner, repo string, pullRequest
 	skippedCount := 0
 	alreadyApprovedCount := 0
 	userSkippedCount := 0
+	heldCount := 0
 
 	prType := "PRs"
 	if config.IsKonflux {
@@ -506,7 +541,7 @@ func approvePRsWithConfig(client api.RESTClient, owner, repo string, pullRequest
 	fmt.Printf("\n🎯 Interactive approval mode for %d %s\n", len(pullRequests), prType)
 
 	// Build help message based on what's already shown
-	helpOptions := []string{"[y]es to approve", "[N]o to skip (default)", "[q]uit"}
+	helpOptions := []string{"[y]es to approve", "[N]o to skip (default)", "[h]old", "[q]uit"}
 	if !showFiles {
 		helpOptions = append(helpOptions, "[f]iles to view")
 	}
@@ -564,9 +599,16 @@ func approvePRsWithConfig(client api.RESTClient, owner, repo string, pullRequest
 		}
 
 		// Prompt user for approval decision
-		if !promptForApproval(pr, owner, repo, client, config) {
+		result := promptForApproval(pr, owner, repo, client, config)
+		switch result {
+		case ApprovalResultSkip:
 			userSkippedCount++
 			continue
+		case ApprovalResultHold:
+			heldCount++
+			continue
+		case ApprovalResultApprove:
+			// Continue with approval process below
 		}
 
 		// Create approval review
@@ -602,6 +644,7 @@ func approvePRsWithConfig(client api.RESTClient, owner, repo string, pullRequest
 	fmt.Printf("   ⏭️  Auto-skipped: %d\n", skippedCount)
 	fmt.Printf("   ✅ Already approved: %d\n", alreadyApprovedCount)
 	fmt.Printf("   ❌ User skipped: %d\n", userSkippedCount)
+	fmt.Printf("   ⏸️  Put on hold: %d\n", heldCount)
 	fmt.Printf("   📊 Total processed: %d\n", len(pullRequests))
 }
 
@@ -670,6 +713,49 @@ func hasMigrationWarning(pr PullRequest) bool {
 	}
 
 	return false
+}
+
+// holdPR puts a PR on hold by commenting /hold and adding the "needs-ok-to-test" label
+func holdPR(client api.RESTClient, owner, repo string, prNumber int, additionalComment string) error {
+	// Build the comment body
+	commentBody := "/hold"
+	if additionalComment != "" {
+		commentBody += "\n\n" + additionalComment
+	}
+
+	// Add the /hold comment
+	commentPath := fmt.Sprintf("repos/%s/%s/issues/%d/comments", owner, repo, prNumber)
+	comment := CommentRequest{
+		Body: commentBody,
+	}
+
+	commentJSON, err := json.Marshal(comment)
+	if err != nil {
+		return fmt.Errorf("failed to marshal comment: %v", err)
+	}
+
+	err = client.Post(commentPath, bytes.NewReader(commentJSON), nil)
+	if err != nil {
+		return fmt.Errorf("failed to add /hold comment: %v", err)
+	}
+
+	// Add the "needs-ok-to-test" label
+	labelPath := fmt.Sprintf("repos/%s/%s/issues/%d/labels", owner, repo, prNumber)
+	labelRequest := LabelRequest{
+		Labels: []string{"needs-ok-to-test"},
+	}
+
+	labelJSON, err := json.Marshal(labelRequest)
+	if err != nil {
+		return fmt.Errorf("failed to marshal label request: %v", err)
+	}
+
+	err = client.Post(labelPath, bytes.NewReader(labelJSON), nil)
+	if err != nil {
+		return fmt.Errorf("failed to add label: %v", err)
+	}
+
+	return nil
 }
 
 // getStatusIcon returns the appropriate icon and status for a PR
