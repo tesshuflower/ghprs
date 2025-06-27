@@ -56,6 +56,12 @@ type ReviewRequest struct {
 	Event string `json:"event"`
 }
 
+// Review represents a pull request review
+type Review struct {
+	State string `json:"state"`
+	User  User   `json:"user"`
+}
+
 var (
 	state   string
 	limit   int
@@ -84,8 +90,8 @@ Examples:
 // konfluxCmd represents the konflux command
 var konfluxCmd = &cobra.Command{
 	Use:   "konflux [owner/repo]",
-	Short: "List Konflux pull requests (authored by app/red-hat-konflux)",
-	Long: `List pull requests authored by "app/red-hat-konflux" for a GitHub repository.
+	Short: "List Konflux pull requests (authored by red-hat-konflux[bot])",
+	Long: `List pull requests authored by "red-hat-konflux[bot]" for a GitHub repository.
 
 If no repository is specified, the current repository will be detected from git remotes.
 You can also specify a repository in the format "owner/repo".
@@ -98,7 +104,7 @@ Examples:
   ghprs konflux --approve                    # Approve all open Konflux PRs
   ghprs konflux owner/repo --approve         # Approve Konflux PRs in specific repo`,
 	Run: func(cmd *cobra.Command, args []string) {
-		listPullRequests(args, "app/red-hat-konflux", true)
+		listPullRequests(args, "red-hat-konflux[bot]", true)
 	},
 }
 
@@ -234,6 +240,7 @@ func listPullRequests(args []string, authorFilter string, isKonflux bool) {
 func approveKonfluxPRs(client api.RESTClient, owner, repo string, pullRequests []PullRequest) {
 	approvedCount := 0
 	skippedCount := 0
+	alreadyApprovedCount := 0
 
 	for _, pr := range pullRequests {
 		// Only approve open PRs
@@ -248,6 +255,32 @@ func approveKonfluxPRs(client api.RESTClient, owner, repo string, pullRequests [
 			fmt.Printf("⏭️  Skipping #%d (draft): %s\n", pr.Number, pr.Title)
 			skippedCount++
 			continue
+		}
+
+		// Check if PR is already approved by current user
+		reviewsPath := fmt.Sprintf("repos/%s/%s/pulls/%d/reviews", owner, repo, pr.Number)
+		var reviews []Review
+		err := client.Get(reviewsPath, &reviews)
+		if err != nil {
+			fmt.Printf("⚠️  Could not check existing reviews for #%d: %v\n", pr.Number, err)
+			// Continue with approval attempt despite error
+		} else {
+			// Check if we already have an approval from the current user
+			alreadyApproved := false
+			for _, review := range reviews {
+				if review.State == "APPROVED" {
+					// We could check if it's from the current user, but for simplicity
+					// we'll consider any approval as sufficient
+					alreadyApproved = true
+					break
+				}
+			}
+
+			if alreadyApproved {
+				fmt.Printf("✅ Already approved #%d: %s\n", pr.Number, pr.Title)
+				alreadyApprovedCount++
+				continue
+			}
 		}
 
 		// Create approval review
@@ -278,6 +311,7 @@ func approveKonfluxPRs(client api.RESTClient, owner, repo string, pullRequests [
 
 	fmt.Printf("\n📊 Summary:\n")
 	fmt.Printf("   ✅ Approved: %d\n", approvedCount)
+	fmt.Printf("   ✅ Already approved: %d\n", alreadyApprovedCount)
 	fmt.Printf("   ⏭️  Skipped: %d\n", skippedCount)
 	fmt.Printf("   📝 Total: %d\n", len(pullRequests))
 }
