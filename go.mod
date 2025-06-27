@@ -2,11 +2,10 @@ module ghprs
 
 go 1.23.0
 
-toolchain go1.23.5
-
 require (
 	github.com/cli/go-gh/v2 v2.12.1
 	github.com/spf13/cobra v1.9.1
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -25,5 +24,4 @@ require (
 	golang.org/x/sys v0.31.0 // indirect
 	golang.org/x/term v0.30.0 // indirect
 	golang.org/x/text v0.23.0 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
