@@ -1,10 +1,13 @@
 package cmd
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"os"
 	"strconv"
 	"strings"
 
@@ -116,7 +119,7 @@ Examples:
   ghprs konflux --state closed
   ghprs konflux --limit 5
   ghprs konflux --current                    # Force use current repo, bypass config
-  ghprs konflux --approve                    # Approve all open Konflux PRs (adds review + /lgtm comment)
+  ghprs konflux --approve                    # Interactively approve Konflux PRs (review + /lgtm comment)
   ghprs konflux owner/repo --approve         # Approve Konflux PRs in specific repo`,
 	Run: func(cmd *cobra.Command, args []string) {
 		listPullRequests(args, "red-hat-konflux[bot]", true)
@@ -259,29 +262,76 @@ func listPullRequests(args []string, authorFilter string, isKonflux bool) {
 	}
 }
 
+// promptForApproval prompts the user to approve a specific PR
+func promptForApproval(pr PullRequest, owner, repo string) bool {
+	fmt.Printf("\n🔍 Review PR #%d:\n", pr.Number)
+	fmt.Printf("   Title: %s\n", pr.Title)
+	fmt.Printf("   Author: @%s\n", pr.User.Login)
+	fmt.Printf("   Branch: %s → %s\n", pr.Head.Ref, pr.Base.Ref)
+	fmt.Printf("   URL: %s\n", pr.HTMLURL)
+
+	// Show hold status if applicable
+	if isOnHold(pr) {
+		fmt.Printf("   ⚠️  Status: ON HOLD (has 'do-not-merge/hold' label)\n")
+	}
+
+	fmt.Printf("\nApprove this PR? [y/N/q]: ")
+
+	reader := bufio.NewReader(os.Stdin)
+	response, err := reader.ReadString('\n')
+	if err != nil {
+		// Handle EOF gracefully (e.g., when input is piped and runs out)
+		if err == io.EOF {
+			fmt.Printf("(EOF - exiting approval process)\n")
+			os.Exit(0)
+		}
+		fmt.Printf("Error reading input: %v (skipping PR)\n", err)
+		return false
+	}
+
+	response = strings.TrimSpace(strings.ToLower(response))
+
+	switch response {
+	case "y", "yes":
+		return true
+	case "q", "quit":
+		fmt.Println("Quitting approval process.")
+		os.Exit(0)
+		return false // This won't be reached but satisfies the compiler
+	default:
+		fmt.Printf("Skipping PR #%d\n", pr.Number)
+		return false
+	}
+}
+
 func approveKonfluxPRs(client api.RESTClient, owner, repo string, pullRequests []PullRequest) {
 	approvedCount := 0
 	skippedCount := 0
 	alreadyApprovedCount := 0
+	userSkippedCount := 0
+
+	fmt.Printf("\n🎯 Interactive approval mode for %d Konflux PRs\n", len(pullRequests))
+	fmt.Printf("Commands: [y]es to approve, [N]o to skip (default), [q]uit\n")
+	fmt.Printf("═══════════════════════════════════════════════════════════════\n")
 
 	for _, pr := range pullRequests {
 		// Only approve open PRs
 		if pr.State != "open" {
-			fmt.Printf("⏭️  Skipping #%d (state: %s): %s\n", pr.Number, pr.State, pr.Title)
+			fmt.Printf("⏭️  Auto-skipping #%d (state: %s): %s\n", pr.Number, pr.State, pr.Title)
 			skippedCount++
 			continue
 		}
 
 		// Skip draft PRs
 		if pr.Draft {
-			fmt.Printf("⏭️  Skipping #%d (draft): %s\n", pr.Number, pr.Title)
+			fmt.Printf("⏭️  Auto-skipping #%d (draft): %s\n", pr.Number, pr.Title)
 			skippedCount++
 			continue
 		}
 
 		// Skip PRs that are on hold
 		if isOnHold(pr) {
-			fmt.Printf("⏭️  Skipping #%d (on hold): %s\n", pr.Number, pr.Title)
+			fmt.Printf("⏭️  Auto-skipping #%d (on hold): %s\n", pr.Number, pr.Title)
 			skippedCount++
 			continue
 		}
@@ -292,7 +342,7 @@ func approveKonfluxPRs(client api.RESTClient, owner, repo string, pullRequests [
 		err := client.Get(reviewsPath, &reviews)
 		if err != nil {
 			fmt.Printf("⚠️  Could not check existing reviews for #%d: %v\n", pr.Number, err)
-			// Continue with approval attempt despite error
+			// Continue with prompt despite error
 		} else {
 			// Check if we already have an approval from the current user
 			alreadyApproved := false
@@ -310,6 +360,12 @@ func approveKonfluxPRs(client api.RESTClient, owner, repo string, pullRequests [
 				alreadyApprovedCount++
 				continue
 			}
+		}
+
+		// Prompt user for approval decision
+		if !promptForApproval(pr, owner, repo) {
+			userSkippedCount++
+			continue
 		}
 
 		// Create approval review
@@ -362,7 +418,8 @@ func approveKonfluxPRs(client api.RESTClient, owner, repo string, pullRequests [
 	fmt.Printf("\n📊 Summary:\n")
 	fmt.Printf("   ✅ Approved: %d\n", approvedCount)
 	fmt.Printf("   ✅ Already approved: %d\n", alreadyApprovedCount)
-	fmt.Printf("   ⏭️  Skipped: %d\n", skippedCount)
+	fmt.Printf("   👤 User skipped: %d\n", userSkippedCount)
+	fmt.Printf("   ⏭️  Auto-skipped: %d\n", skippedCount)
 	fmt.Printf("   📝 Total: %d\n", len(pullRequests))
 }
 
@@ -434,5 +491,5 @@ func init() {
 	konfluxCmd.Flags().StringVarP(&state, "state", "s", "open", "Filter by state: open, closed, all")
 	konfluxCmd.Flags().IntVarP(&limit, "limit", "l", 30, "Maximum number of pull requests to show")
 	konfluxCmd.Flags().BoolVarP(&current, "current", "c", false, "Use current repository, bypass config")
-	konfluxCmd.Flags().BoolVarP(&approve, "approve", "a", false, "Approve all open Konflux pull requests (adds review + /lgtm comment)")
+	konfluxCmd.Flags().BoolVarP(&approve, "approve", "a", false, "Interactively approve Konflux pull requests (review + /lgtm comment)")
 }
