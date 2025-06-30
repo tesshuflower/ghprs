@@ -417,6 +417,7 @@ const (
 	ApprovalResultApprove
 	ApprovalResultHold
 	ApprovalResultQuit
+	ApprovalResultComment
 )
 
 func promptForApproval(pr PullRequest, owner, repo string, client api.RESTClient, config ApprovalConfig) ApprovalResult {
@@ -478,8 +479,8 @@ func promptForApproval(pr PullRequest, owner, repo string, client api.RESTClient
 
 	for {
 		// Build prompt based on what's already shown
-		promptOptions := []string{"y/N/q/h"}
-		promptHelp := []string{"h=hold"}
+		promptOptions := []string{"y/N/q/h/m"}
+		promptHelp := []string{"h=hold", "m=comment"}
 
 		if !showFiles {
 			promptOptions = append(promptOptions, "f")
@@ -544,6 +545,31 @@ func promptForApproval(pr PullRequest, owner, repo string, client api.RESTClient
 
 			fmt.Printf("⏸️  Put PR %s on hold\n", formatPRLink(owner, repo, pr.Number))
 			return ApprovalResultHold
+		case "m", "comment":
+			// Prompt for comment
+			fmt.Printf("Enter your comment: ")
+			reader := bufio.NewReader(os.Stdin)
+			commentText, err := reader.ReadString('\n')
+			if err != nil {
+				fmt.Printf("Error reading comment: %v\n", err)
+				continue // Let user try again
+			}
+			commentText = strings.TrimSpace(commentText)
+
+			if commentText == "" {
+				fmt.Printf("Empty comment, skipping.\n")
+				continue // Let user try again
+			}
+
+			// Add the comment
+			err = addCommentToPR(client, owner, repo, pr.Number, commentText)
+			if err != nil {
+				fmt.Printf("❌ Failed to add comment to PR %s: %v\n", formatPRLink(owner, repo, pr.Number), err)
+				continue // Let user try again
+			}
+
+			fmt.Printf("💬 Added comment to PR %s\n", formatPRLink(owner, repo, pr.Number))
+			return ApprovalResultComment
 		case "f", "files":
 			if showFiles {
 				fmt.Printf("\n📁 File list already shown above.\n")
@@ -605,6 +631,7 @@ func approvePRsWithConfig(client api.RESTClient, owner, repo string, pullRequest
 	approvedCount := 0
 	skippedCount := 0
 	heldCount := 0
+	commentedCount := 0
 
 	for {
 		// Filter out PRs that can't be approved (closed, draft, on hold) and already processed
@@ -722,6 +749,8 @@ func approvePRsWithConfig(client api.RESTClient, owner, repo string, pullRequest
 			skippedCount++
 		case ApprovalResultHold:
 			heldCount++
+		case ApprovalResultComment:
+			commentedCount++
 		case ApprovalResultQuit:
 			fmt.Println("Exiting approval process.")
 			goto exitLoop
@@ -737,7 +766,8 @@ exitLoop:
 	fmt.Printf("   ✅ Approved: %d\n", approvedCount)
 	fmt.Printf("   ❌ Skipped: %d\n", skippedCount)
 	fmt.Printf("   ⏸️  Put on hold: %d\n", heldCount)
-	fmt.Printf("   📊 Total processed: %d\n", approvedCount+skippedCount+heldCount)
+	fmt.Printf("   💬 Commented: %d\n", commentedCount)
+	fmt.Printf("   📊 Total processed: %d\n", approvedCount+skippedCount+heldCount+commentedCount)
 }
 
 // approveSinglePR handles the approval process for a single PR
@@ -796,6 +826,9 @@ func approveSinglePR(client api.RESTClient, owner, repo string, pr PullRequest, 
 		return ApprovalResultHold
 	case ApprovalResultQuit:
 		return ApprovalResultQuit
+	case ApprovalResultComment:
+		fmt.Printf("💬 Added comment to PR %s\n", formatPRLink(owner, repo, pr.Number))
+		return ApprovalResultComment
 	case ApprovalResultApprove:
 		// Continue with approval process below
 	}
@@ -1138,6 +1171,28 @@ func holdPR(client api.RESTClient, owner, repo string, prNumber int, additionalC
 	err = client.Post(labelPath, bytes.NewReader(labelJSON), nil)
 	if err != nil {
 		return fmt.Errorf("failed to add label: %v", err)
+	}
+
+	return nil
+}
+
+// addCommentToPR adds a comment to a pull request
+func addCommentToPR(client api.RESTClient, owner, repo string, prNumber int, commentText string) error {
+	commentPath := fmt.Sprintf("repos/%s/%s/issues/%d/comments", owner, repo, prNumber)
+	comment := CommentRequest{
+		Body: commentText,
+	}
+
+	// Convert comment to JSON
+	commentJSON, err := json.Marshal(comment)
+	if err != nil {
+		return fmt.Errorf("failed to marshal comment: %v", err)
+	}
+
+	// Add the comment
+	err = client.Post(commentPath, bytes.NewReader(commentJSON), nil)
+	if err != nil {
+		return fmt.Errorf("failed to post comment: %v", err)
 	}
 
 	return nil

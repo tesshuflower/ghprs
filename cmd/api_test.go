@@ -214,6 +214,29 @@ var _ = Describe("GitHub API Functions with Mocks", func() {
 			Expect(mockClient.GetRequestCount("comments")).To(Equal(1))
 			Expect(mockClient.GetRequestCount("labels")).To(Equal(1))
 		})
+
+		It("should handle PR comment operations", func() {
+			mockClient.AddResponse("comments", 201, map[string]interface{}{"id": 456})
+
+			// Test comment creation
+			commentResp, err := mockClient.Request("POST", fmt.Sprintf("repos/%s/%s/issues/1/comments", owner, repo),
+				strings.NewReader(`{"body": "This looks good to me, just a small suggestion."}`))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(commentResp.StatusCode).To(Equal(201))
+
+			// Verify the response
+			defer func() { _ = commentResp.Body.Close() }()
+			body, err := io.ReadAll(commentResp.Body)
+			Expect(err).NotTo(HaveOccurred())
+
+			var response map[string]interface{}
+			err = json.Unmarshal(body, &response)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(response["id"]).To(Equal(float64(456))) // JSON numbers are float64
+
+			// Verify request was recorded
+			Expect(mockClient.GetRequestCount("comments")).To(Equal(1))
+		})
 	})
 
 	Describe("Mock Client Functionality", func() {
