@@ -399,14 +399,13 @@ func listPullRequests(args []string, authorFilter string, isKonflux bool) {
 				}
 			}
 
-			// Create a cache and populate it during table display, then use it for approval
-			cache := displayPRTable(pullRequests, owner, repo, client, isKonflux)
-			approvePRsWithConfigAndCache(*client, owner, repo, pullRequests, config, cache)
+			// Start approval flow - table will be displayed there
+			approvePRsWithConfig(*client, owner, repo, pullRequests, config, nil)
 			continue
 		}
 
 		// Display PR list in table format
-		_ = displayPRTable(pullRequests, owner, repo, client, isKonflux)
+		_ = displayPRTable(pullRequests, owner, repo, client, isKonflux, nil)
 	}
 }
 
@@ -639,8 +638,7 @@ func promptForApprovalWithCache(pr PullRequest, owner, repo string, client api.R
 	}
 }
 
-// approvePRsWithConfigAndCache is like approvePRsWithConfig but reuses an existing cache
-func approvePRsWithConfigAndCache(client api.RESTClient, owner, repo string, pullRequests []PullRequest, config ApprovalConfig, cache *PRDetailsCache) {
+func approvePRsWithConfig(client api.RESTClient, owner, repo string, pullRequests []PullRequest, config ApprovalConfig, cache *PRDetailsCache) {
 	fmt.Printf("\n🎯 Interactive approval mode for %d PRs\n", len(pullRequests))
 
 	// Keep track of processed PRs to remove them from subsequent displays
@@ -678,9 +676,9 @@ func approvePRsWithConfigAndCache(client api.RESTClient, owner, repo string, pul
 			break
 		}
 
-		// Display the PR table (excluding processed PRs) - reuse the cache
+		// Display the PR table (excluding processed PRs)
 		fmt.Printf("═══════════════════════════════════════════════════════════════\n")
-		displayPRTableWithCache(displayPRs, owner, repo, &client, config.IsKonflux, cache)
+		cache = displayPRTable(displayPRs, owner, repo, &client, config.IsKonflux, cache)
 		fmt.Printf("═══════════════════════════════════════════════════════════════\n")
 
 		// Check if we have any approvable PRs left
@@ -1760,10 +1758,15 @@ func displayLegend(isKonflux bool) {
 	fmt.Println()
 }
 
-// displayPRTable displays PRs in a table format and returns the cache for reuse
-func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.RESTClient, isKonflux bool) *PRDetailsCache {
+// displayPRTableWithCache displays PRs in a table format using an optional existing cache
+func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.RESTClient, isKonflux bool, cache *PRDetailsCache) *PRDetailsCache {
+	// Use existing cache or create a new one
+	if cache == nil {
+		cache = NewPRDetailsCache()
+	}
+
 	if len(pullRequests) == 0 {
-		return NewPRDetailsCache() // Return empty cache
+		return cache
 	}
 
 	// Display legend first
@@ -1817,9 +1820,6 @@ func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.
 		fmt.Printf(" %s", PadString(strings.Repeat("-", tektonWidth), tektonWidth))
 	}
 	fmt.Printf("\n")
-
-	// Create a cache for PR details to avoid duplicate API calls
-	cache := NewPRDetailsCache()
 
 	// Display each PR as a table row
 	for _, pr := range pullRequests {
@@ -1934,176 +1934,6 @@ func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.
 
 	// Return the cache for potential reuse in approval flow
 	return cache
-}
-
-// displayPRTableWithCache displays PRs in a table format using an existing cache
-func displayPRTableWithCache(pullRequests []PullRequest, owner, repo string, client *api.RESTClient, isKonflux bool, cache *PRDetailsCache) {
-	if len(pullRequests) == 0 {
-		return
-	}
-
-	// Display legend first
-	displayLegend(isKonflux)
-
-	// Define column widths - compact but readable
-	const (
-		statusWidth   = 2  // Emoji width
-		prWidth       = 6  // "#1234"
-		titleWidth    = 41 // Shorter titles (reduced to fit blocked column)
-		authorWidth   = 16 // Author names (reduced to fit blocked column)
-		branchWidth   = 14 // Source branch names
-		targetWidth   = 12 // Target branch names
-		stateWidth    = 10 // "STATUS"
-		reviewedWidth = 8  // "REVIEWED"
-		rebaseWidth   = 6  // "REBASE"
-		blockedWidth  = 7  // "BLOCKED"
-		tektonWidth   = 6  // "TEKTON"
-	)
-
-	// Print table header
-	fmt.Printf("%s %s %s %s %s %s %s %s %s %s",
-		PadString("ST", statusWidth),
-		PadString("PR", prWidth),
-		PadString("TITLE", titleWidth),
-		PadString("AUTHOR", authorWidth),
-		PadString("BRANCH", branchWidth),
-		PadString("TARGET", targetWidth),
-		PadString("STATUS", stateWidth),
-		PadString("REVIEWED", reviewedWidth),
-		PadString("REBASE", rebaseWidth),
-		PadString("BLOCKED", blockedWidth))
-	if isKonflux {
-		fmt.Printf(" %s", PadString("TEKTON", tektonWidth))
-	}
-	fmt.Printf("\n")
-
-	// Print separator line
-	fmt.Printf("%s %s %s %s %s %s %s %s %s %s",
-		PadString(strings.Repeat("-", statusWidth), statusWidth),
-		PadString(strings.Repeat("-", prWidth), prWidth),
-		PadString(strings.Repeat("-", titleWidth), titleWidth),
-		PadString(strings.Repeat("-", authorWidth), authorWidth),
-		PadString(strings.Repeat("-", branchWidth), branchWidth),
-		PadString(strings.Repeat("-", targetWidth), targetWidth),
-		PadString(strings.Repeat("-", stateWidth), stateWidth),
-		PadString(strings.Repeat("-", reviewedWidth), reviewedWidth),
-		PadString(strings.Repeat("-", rebaseWidth), rebaseWidth),
-		PadString(strings.Repeat("-", blockedWidth), blockedWidth))
-	if isKonflux {
-		fmt.Printf(" %s", PadString(strings.Repeat("-", tektonWidth), tektonWidth))
-	}
-	fmt.Printf("\n")
-
-	// Display each PR as a table row - reuse existing cache
-	for _, pr := range pullRequests {
-		// Check for Tekton files if this is a Konflux PR
-		onlyTektonFiles := false
-		if isKonflux {
-			var err error
-			onlyTektonFiles, _, err = checkTektonFilesDetailed(*client, owner, repo, pr.Number)
-			if err != nil {
-				// Silently continue if we can't check Tekton files for table display
-				// Error is intentionally ignored for display purposes
-				_ = err
-			}
-		}
-
-		// Check for migration warnings
-		hasMigration := false
-		if isKonflux {
-			hasMigration = hasMigrationWarning(pr)
-		}
-
-		// Skip PRs that don't exclusively modify Tekton files if --tekton-only flag is set
-		if tektonOnly && !onlyTektonFiles {
-			continue
-		}
-
-		// Skip PRs that don't have migration warnings if --migration-only flag is set
-		if migrationOnly && !hasMigration {
-			continue
-		}
-
-		// Get status icon
-		var icon string
-		if isKonflux {
-			icon = getStatusIconWithTekton(pr, onlyTektonFiles)
-		} else {
-			icon = getStatusIcon(pr)
-		}
-
-		// Prepare table data
-		prLink := formatPRLink(owner, repo, pr.Number)
-		title := TruncateString(pr.Title, titleWidth)
-		author := TruncateString(pr.User.Login, authorWidth)
-		branch := TruncateString(pr.Head.Ref, branchWidth)
-		target := TruncateString(pr.Base.Ref, targetWidth)
-
-		// Determine status text
-		status := ""
-		if pr.Draft {
-			status = "draft"
-		} else if isOnHold(pr) {
-			status = "on hold"
-		} else {
-			status = pr.State
-		}
-		if hasMigration {
-			status += " 🚨"
-		}
-		status = TruncateString(status, stateWidth)
-
-		// Determine reviewed status
-		reviewedStatus := ""
-		if isReviewed(*client, owner, repo, pr.Number) {
-			reviewedStatus = "✅"
-		} else {
-			reviewedStatus = "❌"
-		}
-
-		// Determine rebase status - skip API call if PR is on hold
-		rebaseStatus := ""
-		if isOnHold(pr) {
-			rebaseStatus = "-" // N/A for PRs on hold
-		} else if needsRebaseWithCache(cache, *client, owner, repo, pr) {
-			rebaseStatus = "🔄"
-		}
-		// Leave empty if no rebase needed
-
-		// Determine blocked status - skip API call if PR is on hold
-		blockedStatus := ""
-		if isOnHold(pr) {
-			blockedStatus = "-" // N/A for PRs on hold
-		} else if isBlockedWithCache(cache, *client, owner, repo, pr) {
-			blockedStatus = "🚫"
-		}
-		// Leave empty if not blocked
-
-		// Print the row with proper padding
-		fmt.Printf("%s %s %s %s %s %s %s %s %s %s",
-			PadString(icon, statusWidth),
-			PadString(prLink, prWidth),
-			PadString(title, titleWidth),
-			PadString(author, authorWidth),
-			PadString(branch, branchWidth),
-			PadString(target, targetWidth),
-			PadString(status, stateWidth),
-			PadString(reviewedStatus, reviewedWidth),
-			PadString(rebaseStatus, rebaseWidth),
-			PadString(blockedStatus, blockedWidth))
-
-		if isKonflux {
-			tektonStatus := ""
-			if onlyTektonFiles {
-				tektonStatus = "✅"
-			} else {
-				tektonStatus = "❌"
-			}
-			fmt.Printf(" %s", PadString(tektonStatus, tektonWidth))
-		}
-
-		fmt.Printf("\n")
-	}
 }
 
 func init() {
