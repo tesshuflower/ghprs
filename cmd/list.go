@@ -198,6 +198,52 @@ type ApprovalConfig struct {
 	IsKonflux bool
 }
 
+// promptForRepositorySelection prompts the user to select a repository from a list
+func promptForRepositorySelection(repositories []string) string {
+	fmt.Printf("\n📂 Multiple repositories configured (%d):\n", len(repositories))
+	for i, repo := range repositories {
+		fmt.Printf("  %d. %s\n", i+1, repo)
+	}
+	fmt.Printf("  %d. All repositories\n", len(repositories)+1)
+	fmt.Printf("  0. Cancel\n")
+
+	for {
+		fmt.Printf("\nSelect repository (1-%d, %d for all, 0 to cancel): ", len(repositories), len(repositories)+1)
+
+		reader := bufio.NewReader(os.Stdin)
+		input, err := reader.ReadString('\n')
+		if err != nil {
+			if err == io.EOF {
+				fmt.Printf("\n")
+				return "" // User cancelled or input ended
+			}
+			fmt.Printf("Error reading input: %v\n", err)
+			return "" // Exit on any read error
+		}
+
+		input = strings.TrimSpace(input)
+		if input == "" {
+			continue
+		}
+
+		choice, err := strconv.Atoi(input)
+		if err != nil {
+			fmt.Printf("Invalid input '%s'. Please enter a number.\n", input)
+			continue
+		}
+
+		if choice == 0 {
+			return "" // User cancelled
+		} else if choice >= 1 && choice <= len(repositories) {
+			return repositories[choice-1]
+		} else if choice == len(repositories)+1 {
+			return "ALL" // Special value to indicate all repositories
+		} else {
+			fmt.Printf("Invalid choice %d. Please select a number between 0 and %d.\n", choice, len(repositories)+1)
+		}
+	}
+}
+
 func listPullRequests(args []string, authorFilter string, isKonflux bool) {
 	// Load configuration
 	config, err := LoadConfig()
@@ -229,7 +275,21 @@ func listPullRequests(args []string, authorFilter string, isKonflux bool) {
 	} else {
 		// Use configured repositories first, then fall back to auto-detection
 		if len(config.Repositories) > 0 {
-			repositories = config.Repositories
+			// If there are multiple repositories, prompt the user to select which repository they want to see
+			if len(config.Repositories) > 1 {
+				selectedRepo := promptForRepositorySelection(config.Repositories)
+				if selectedRepo == "" {
+					fmt.Println("No repository selected. Exiting.")
+					return
+				}
+				if selectedRepo == "ALL" {
+					repositories = config.Repositories
+				} else {
+					repositories = []string{selectedRepo}
+				}
+			} else {
+				repositories = config.Repositories
+			}
 		} else if currentRepo, err := repository.Current(); err == nil {
 			repositories = []string{fmt.Sprintf("%s/%s", currentRepo.Owner, currentRepo.Name)}
 		} else {
