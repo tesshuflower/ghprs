@@ -30,7 +30,7 @@ var _ = Describe("GitHub API Functions with Mocks", func() {
 			// Simulate the API call
 			resp, err := mockClient.Request("GET", fmt.Sprintf("repos/%s/%s/commits/abc123/check-runs", owner, repo), nil)
 			Expect(err).NotTo(HaveOccurred())
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 
 			// Parse the response like the real function would
 			body, err := io.ReadAll(resp.Body)
@@ -82,7 +82,7 @@ var _ = Describe("GitHub API Functions with Mocks", func() {
 
 			resp, err := mockClient.Request("GET", fmt.Sprintf("repos/%s/%s/pulls/1/reviews", owner, repo), nil)
 			Expect(err).NotTo(HaveOccurred())
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 
 			body, err := io.ReadAll(resp.Body)
 			Expect(err).NotTo(HaveOccurred())
@@ -109,7 +109,7 @@ var _ = Describe("GitHub API Functions with Mocks", func() {
 
 			resp, err := mockClient.Request("GET", fmt.Sprintf("repos/%s/%s/pulls/1/reviews", owner, repo), nil)
 			Expect(err).NotTo(HaveOccurred())
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 
 			body, err := io.ReadAll(resp.Body)
 			Expect(err).NotTo(HaveOccurred())
@@ -138,7 +138,7 @@ var _ = Describe("GitHub API Functions with Mocks", func() {
 
 			resp, err := mockClient.Request("GET", fmt.Sprintf("repos/%s/%s/pulls/1/files", owner, repo), nil)
 			Expect(err).NotTo(HaveOccurred())
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 
 			body, err := io.ReadAll(resp.Body)
 			Expect(err).NotTo(HaveOccurred())
@@ -168,7 +168,7 @@ var _ = Describe("GitHub API Functions with Mocks", func() {
 
 			resp, err := mockClient.Request("GET", fmt.Sprintf("repos/%s/%s/pulls/1/files", owner, repo), nil)
 			Expect(err).NotTo(HaveOccurred())
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 
 			body, err := io.ReadAll(resp.Body)
 			Expect(err).NotTo(HaveOccurred())
@@ -220,8 +220,8 @@ var _ = Describe("GitHub API Functions with Mocks", func() {
 		It("should record requests correctly", func() {
 			mockClient.ClearRequests()
 
-			mockClient.Request("GET", "repos/owner/repo/pulls", nil)
-			mockClient.Request("POST", "repos/owner/repo/issues/1/comments", strings.NewReader("test"))
+			_, _ = mockClient.Request("GET", "repos/owner/repo/pulls", nil)
+			_, _ = mockClient.Request("POST", "repos/owner/repo/issues/1/comments", strings.NewReader("test"))
 
 			Expect(len(mockClient.Requests)).To(Equal(2))
 			Expect(mockClient.Requests[0].Method).To(Equal("GET"))

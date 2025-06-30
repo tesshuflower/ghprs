@@ -110,7 +110,7 @@ func (m *MockRESTClient) Get(path string, response interface{}) error {
 	if err != nil {
 		return err
 	}
-	defer httpResp.Body.Close()
+	defer func() { _ = httpResp.Body.Close() }()
 
 	if httpResp.StatusCode >= 400 {
 		return fmt.Errorf("HTTP %d", httpResp.StatusCode)
@@ -139,7 +139,7 @@ func (m *MockRESTClient) Post(path string, body interface{}, response interface{
 	if err != nil {
 		return err
 	}
-	defer httpResp.Body.Close()
+	defer func() { _ = httpResp.Body.Close() }()
 
 	if httpResp.StatusCode >= 400 {
 		return fmt.Errorf("HTTP %d", httpResp.StatusCode)

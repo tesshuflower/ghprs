@@ -1239,7 +1239,7 @@ func displayDiff(owner, repo string, prNumber int) error {
 	if err != nil {
 		return fmt.Errorf("failed to fetch diff: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != 200 {
 		return fmt.Errorf("failed to fetch diff: HTTP %d", resp.StatusCode)
@@ -1558,6 +1558,8 @@ func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.
 			onlyTektonFiles, _, err = checkTektonFilesDetailed(*client, owner, repo, pr.Number)
 			if err != nil {
 				// Silently continue if we can't check Tekton files for table display
+				// Error is intentionally ignored for display purposes
+				_ = err
 			}
 		}
 

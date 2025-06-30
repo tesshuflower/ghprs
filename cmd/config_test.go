@@ -20,12 +20,12 @@ var _ = Describe("Configuration", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		originalHome = os.Getenv("HOME")
-		os.Setenv("HOME", tempDir)
+		_ = os.Setenv("HOME", tempDir)
 	})
 
 	AfterEach(func() {
-		os.Setenv("HOME", originalHome)
-		os.RemoveAll(tempDir)
+		_ = os.Setenv("HOME", originalHome)
+		_ = os.RemoveAll(tempDir)
 	})
 
 	Describe("DefaultConfig", func() {
