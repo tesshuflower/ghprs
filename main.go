@@ -17,19 +17,6 @@ var versionCmd = &cobra.Command{
 	},
 }
 
-var helloCmd = &cobra.Command{
-	Use:   "hello [name]",
-	Short: "Say hello to someone",
-	Args:  cobra.MaximumNArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		name := "World"
-		if len(args) > 0 {
-			name = args[0]
-		}
-		fmt.Printf("Hello, %s!\n", name)
-	},
-}
-
 func main() {
 	if err := cmd.RootCmd.Execute(); err != nil {
 		fmt.Println(err)
@@ -39,5 +26,4 @@ func main() {
 
 func init() {
 	cmd.RootCmd.AddCommand(versionCmd)
-	cmd.RootCmd.AddCommand(helloCmd)
 }
