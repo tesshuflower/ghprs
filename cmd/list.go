@@ -501,7 +501,7 @@ func promptForApproval(pr PullRequest, owner, repo string, client api.RESTClient
 		}
 		promptStr += ": "
 
-		fmt.Printf(promptStr)
+		fmt.Print(promptStr)
 
 		reader := bufio.NewReader(os.Stdin)
 		response, err := reader.ReadString('\n')
