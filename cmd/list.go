@@ -343,53 +343,8 @@ func listPullRequests(args []string, authorFilter string, isKonflux bool) {
 			continue
 		}
 
-		// Display PR list
-		for _, pr := range pullRequests {
-			// Check for Tekton files if this is a Konflux PR
-			onlyTektonFiles := false
-			var tektonFiles []string
-			if isKonflux {
-				var err error
-				onlyTektonFiles, tektonFiles, err = checkTektonFilesDetailed(*client, owner, repo, pr.Number)
-				if err != nil {
-					fmt.Printf("⚠️  Could not check files for PR %s: %v\n", formatPRLink(owner, repo, pr.Number), err)
-				}
-			}
-
-			// Check for migration warnings
-			hasMigration := false
-			if isKonflux {
-				hasMigration = hasMigrationWarning(pr)
-			}
-
-			// Skip PRs that don't exclusively modify Tekton files if --tekton-only flag is set
-			if tektonOnly && !onlyTektonFiles {
-				continue
-			}
-
-			// Skip PRs that don't have migration warnings if --migration-only flag is set
-			if migrationOnly && !hasMigration {
-				continue
-			}
-
-			// Color-code based on state, draft status, hold status, and Tekton files
-			var icon string
-			if isKonflux {
-				icon = getStatusIconWithTekton(pr, onlyTektonFiles)
-			} else {
-				icon = getStatusIcon(pr)
-			}
-
-			fmt.Printf("%s %s %s\n", icon, formatPRLink(owner, repo, pr.Number), pr.Title)
-			fmt.Printf("        %s → %s by @%s\n", pr.Head.Ref, pr.Base.Ref, pr.User.Login)
-			if isKonflux && onlyTektonFiles && len(tektonFiles) > 0 {
-				fmt.Printf("        📁 Tekton-only files: %s\n", strings.Join(tektonFiles, ", "))
-			}
-			if isKonflux && hasMigration {
-				fmt.Printf("        🚨 Contains migration warnings\n")
-			}
-			fmt.Printf("\n")
-		}
+		// Display PR list in table format
+		displayPRTable(pullRequests, owner, repo, client, isKonflux)
 	}
 }
 
@@ -710,6 +665,26 @@ func isOnHold(pr PullRequest) bool {
 	return false
 }
 
+// isReviewed checks if a PR has any approved reviews
+func isReviewed(client api.RESTClient, owner, repo string, prNumber int) bool {
+	reviewsPath := fmt.Sprintf("repos/%s/%s/pulls/%d/reviews", owner, repo, prNumber)
+	var reviews []Review
+	err := client.Get(reviewsPath, &reviews)
+	if err != nil {
+		// If we can't fetch reviews, assume not reviewed
+		return false
+	}
+
+	// Check if we have any approved reviews
+	for _, review := range reviews {
+		if review.State == "APPROVED" {
+			return true
+		}
+	}
+
+	return false
+}
+
 // checkTektonFilesDetailed checks if a PR ONLY modifies specific Tekton files and returns the list
 func checkTektonFilesDetailed(client api.RESTClient, owner, repo string, prNumber int) (bool, []string, error) {
 	filesPath := fmt.Sprintf("repos/%s/%s/pulls/%d/files", owner, repo, prNumber)
@@ -1001,73 +976,50 @@ func getStatusIcon(pr PullRequest) string {
 	onHold := isOnHold(pr)
 
 	if pr.Draft {
-		if onHold {
-			return "🟡 (draft, on hold)"
-		}
-		return "🟡 (draft)"
+		return "🟡"
 	}
 
 	switch pr.State {
 	case "open":
 		if onHold {
-			return "🔶 (open, on hold)"
+			return "🔶"
 		}
-		return "🟢 (open)"
+		return "🟢"
 	case "closed":
-		return "🔴 (closed)"
+		return "🔴"
 	case "merged":
-		return "🟣 (merged)"
+		return "🟣"
 	default:
 		if onHold {
-			return "⚪ (" + pr.State + ", on hold)"
+			return "🔶"
 		}
-		return "⚪ (" + pr.State + ")"
+		return "⚪"
 	}
 }
 
 // getStatusIconWithTekton returns the appropriate icon and status for a PR, including Tekton and migration info
 func getStatusIconWithTekton(pr PullRequest, hasTektonFiles bool) string {
 	onHold := isOnHold(pr)
-	hasMigration := hasMigrationWarning(pr)
-
-	var indicators []string
-	if hasTektonFiles {
-		indicators = append(indicators, "tekton")
-	}
-	if hasMigration {
-		indicators = append(indicators, "migration")
-	}
-
-	indicatorStr := ""
-	if len(indicators) > 0 {
-		indicatorStr = ", " + strings.Join(indicators, ", ")
-	}
 
 	if pr.Draft {
-		if onHold {
-			return fmt.Sprintf("🟡 (draft, on hold%s)", indicatorStr)
-		}
-		return fmt.Sprintf("🟡 (draft%s)", indicatorStr)
+		return "🟡"
 	}
 
 	switch pr.State {
 	case "open":
 		if onHold {
-			return fmt.Sprintf("🔶 (open, on hold%s)", indicatorStr)
+			return "🔶"
 		}
-		if hasTektonFiles || hasMigration {
-			return fmt.Sprintf("🟢 (open%s)", indicatorStr)
-		}
-		return "🟢 (open)"
+		return "🟢"
 	case "closed":
-		return fmt.Sprintf("🔴 (closed%s)", indicatorStr)
+		return "🔴"
 	case "merged":
-		return fmt.Sprintf("🟣 (merged%s)", indicatorStr)
+		return "🟣"
 	default:
 		if onHold {
-			return fmt.Sprintf("⚪ (%s, on hold%s)", pr.State, indicatorStr)
+			return "🔶"
 		}
-		return fmt.Sprintf("⚪ (%s%s)", pr.State, indicatorStr)
+		return "⚪"
 	}
 }
 
@@ -1344,6 +1296,282 @@ func formatPRLink(owner, repo string, prNumber int) string {
 
 	url := fmt.Sprintf("https://github.com/%s/%s/pull/%d", owner, repo, prNumber)
 	return fmt.Sprintf("\033]8;;%s\033\\#%d\033]8;;\033\\", url, prNumber)
+}
+
+// truncateString truncates a string to a maximum display width with ellipsis
+func truncateString(s string, maxWidth int) string {
+	if displayWidth(s) <= maxWidth {
+		return s
+	}
+	if maxWidth <= 3 {
+		// If maxWidth is very small, just truncate by runes
+		runes := []rune(s)
+		if len(runes) <= maxWidth {
+			return s
+		}
+		return string(runes[:maxWidth])
+	}
+
+	// Truncate to fit within maxWidth - 3 (for "...")
+	targetWidth := maxWidth - 3
+	runes := []rune(s)
+	currentWidth := 0
+
+	for i, r := range runes {
+		charWidth := 1
+		if r >= 0x1F600 && r <= 0x1F64F || // Emoticons
+			r >= 0x1F300 && r <= 0x1F5FF || // Misc Symbols and Pictographs
+			r >= 0x1F680 && r <= 0x1F6FF || // Transport and Map
+			r >= 0x1F1E0 && r <= 0x1F1FF || // Regional indicators
+			r >= 0x2600 && r <= 0x26FF || // Misc symbols
+			r >= 0x2700 && r <= 0x27BF { // Dingbats
+			charWidth = 2
+		}
+
+		if currentWidth+charWidth > targetWidth {
+			return string(runes[:i]) + "..."
+		}
+		currentWidth += charWidth
+	}
+
+	return s
+}
+
+// displayWidth calculates the visual width of a string in the terminal
+func displayWidth(s string) int {
+	// Remove ANSI escape sequences (including OSC 8 sequences for links)
+	cleanString := stripANSISequences(s)
+
+	width := 0
+	for _, r := range cleanString {
+		// Most emojis and some Unicode characters take 2 character widths
+		if r >= 0x1F600 && r <= 0x1F64F || // Emoticons
+			r >= 0x1F300 && r <= 0x1F5FF || // Misc Symbols and Pictographs
+			r >= 0x1F680 && r <= 0x1F6FF || // Transport and Map
+			r >= 0x1F7E0 && r <= 0x1F7EB || // Geometric Shapes Extended (colored circles)
+			r >= 0x1F1E0 && r <= 0x1F1FF || // Regional indicators
+			r >= 0x2600 && r <= 0x26FF || // Misc symbols
+			r >= 0x2700 && r <= 0x27BF || // Dingbats
+			r == 0x200D || // Zero width joiner
+			r >= 0xFE0F && r <= 0xFE0F { // Variation selectors
+			width += 2
+		} else if r >= 0x20 { // Printable ASCII and most Unicode
+			width += 1
+		}
+		// Control characters (< 0x20) don't add width
+	}
+	return width
+}
+
+// stripANSISequences removes ANSI escape sequences from a string
+func stripANSISequences(s string) string {
+	result := strings.Builder{}
+	i := 0
+	runes := []rune(s)
+
+	for i < len(runes) {
+		if runes[i] == '\033' && i+1 < len(runes) { // ESC character
+			i++ // Skip the ESC
+
+			if i < len(runes) && runes[i] == ']' { // OSC sequence (like ]8;;URL\033\\)
+				i++ // Skip the ]
+				// Skip everything until we find the terminator
+				for i < len(runes) {
+					if runes[i] == '\007' { // BEL terminator
+						i++
+						break
+					} else if runes[i] == '\033' && i+1 < len(runes) && runes[i+1] == '\\' { // ST terminator
+						i += 2 // Skip \033\
+						break
+					}
+					i++
+				}
+			} else if i < len(runes) && runes[i] == '[' { // CSI sequence (like [31m)
+				i++ // Skip the [
+				// Skip until we find the final byte (@ to ~)
+				for i < len(runes) {
+					if runes[i] >= 0x40 && runes[i] <= 0x7E {
+						i++
+						break
+					}
+					i++
+				}
+			} else {
+				// Other escape sequences, skip until final byte
+				for i < len(runes) {
+					if runes[i] >= 0x40 && runes[i] <= 0x7E {
+						i++
+						break
+					}
+					i++
+				}
+			}
+		} else {
+			result.WriteRune(runes[i])
+			i++
+		}
+	}
+
+	return result.String()
+}
+
+// padString pads a string to a specific width, accounting for actual display width
+func padString(s string, width int) string {
+	currentWidth := displayWidth(s)
+	if currentWidth >= width {
+		return s
+	}
+	padding := width - currentWidth
+	return s + strings.Repeat(" ", padding)
+}
+
+// displayLegend shows what the various emojis and symbols mean in the table
+func displayLegend(isKonflux bool) {
+	fmt.Println("Legend:")
+	fmt.Println("  Status: 🟢 open  🟡 draft  🔶 on hold  🔴 closed  🟣 merged")
+	fmt.Println("  Reviewed: ✅ approved  ❌ not approved")
+	if isKonflux {
+		fmt.Println("  Tekton: ✅ exclusively Tekton files  ❌ mixed/other files")
+		fmt.Println("  🚨 = migration warning")
+	}
+	fmt.Println()
+}
+
+// displayPRTable displays PRs in a table format
+func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.RESTClient, isKonflux bool) {
+	if len(pullRequests) == 0 {
+		return
+	}
+
+	// Display legend first
+	displayLegend(isKonflux)
+
+	// Define column widths - compact but readable
+	const (
+		statusWidth   = 2  // Emoji width
+		prWidth       = 6  // "#1234"
+		titleWidth    = 45 // Shorter titles
+		authorWidth   = 20 // Author names (increased for longer usernames)
+		branchWidth   = 14 // Branch names
+		stateWidth    = 10 // "STATUS"
+		reviewedWidth = 8  // "REVIEWED"
+		tektonWidth   = 6  // "TEKTON"
+	)
+
+	// Print table header
+	fmt.Printf("%s %s %s %s %s %s %s",
+		padString("ST", statusWidth),
+		padString("PR", prWidth),
+		padString("TITLE", titleWidth),
+		padString("AUTHOR", authorWidth),
+		padString("BRANCH", branchWidth),
+		padString("STATUS", stateWidth),
+		padString("REVIEWED", reviewedWidth))
+	if isKonflux {
+		fmt.Printf(" %s", padString("TEKTON", tektonWidth))
+	}
+	fmt.Printf("\n")
+
+	// Print separator line
+	fmt.Printf("%s %s %s %s %s %s %s",
+		padString(strings.Repeat("-", statusWidth), statusWidth),
+		padString(strings.Repeat("-", prWidth), prWidth),
+		padString(strings.Repeat("-", titleWidth), titleWidth),
+		padString(strings.Repeat("-", authorWidth), authorWidth),
+		padString(strings.Repeat("-", branchWidth), branchWidth),
+		padString(strings.Repeat("-", stateWidth), stateWidth),
+		padString(strings.Repeat("-", reviewedWidth), reviewedWidth))
+	if isKonflux {
+		fmt.Printf(" %s", padString(strings.Repeat("-", tektonWidth), tektonWidth))
+	}
+	fmt.Printf("\n")
+
+	// Display each PR as a table row
+	for _, pr := range pullRequests {
+		// Check for Tekton files if this is a Konflux PR
+		onlyTektonFiles := false
+		if isKonflux {
+			var err error
+			onlyTektonFiles, _, err = checkTektonFilesDetailed(*client, owner, repo, pr.Number)
+			if err != nil {
+				// Silently continue if we can't check Tekton files for table display
+			}
+		}
+
+		// Check for migration warnings
+		hasMigration := false
+		if isKonflux {
+			hasMigration = hasMigrationWarning(pr)
+		}
+
+		// Skip PRs that don't exclusively modify Tekton files if --tekton-only flag is set
+		if tektonOnly && !onlyTektonFiles {
+			continue
+		}
+
+		// Skip PRs that don't have migration warnings if --migration-only flag is set
+		if migrationOnly && !hasMigration {
+			continue
+		}
+
+		// Get status icon
+		var icon string
+		if isKonflux {
+			icon = getStatusIconWithTekton(pr, onlyTektonFiles)
+		} else {
+			icon = getStatusIcon(pr)
+		}
+
+		// Prepare table data
+		prLink := formatPRLink(owner, repo, pr.Number)
+		title := truncateString(pr.Title, titleWidth)
+		author := truncateString(pr.User.Login, authorWidth)
+		branch := truncateString(pr.Head.Ref, branchWidth)
+
+		// Determine status text
+		status := ""
+		if pr.Draft {
+			status = "draft"
+		} else if isOnHold(pr) {
+			status = "on hold"
+		} else {
+			status = pr.State
+		}
+		if hasMigration {
+			status += " 🚨"
+		}
+		status = truncateString(status, stateWidth)
+
+		// Determine reviewed status
+		reviewedStatus := ""
+		if isReviewed(*client, owner, repo, pr.Number) {
+			reviewedStatus = "✅"
+		} else {
+			reviewedStatus = "❌"
+		}
+
+		// Print the row with proper padding
+		fmt.Printf("%s %s %s %s %s %s %s",
+			padString(icon, statusWidth),
+			padString(prLink, prWidth),
+			padString(title, titleWidth),
+			padString(author, authorWidth),
+			padString(branch, branchWidth),
+			padString(status, stateWidth),
+			padString(reviewedStatus, reviewedWidth))
+
+		if isKonflux {
+			tektonStatus := ""
+			if onlyTektonFiles {
+				tektonStatus = "✅"
+			} else {
+				tektonStatus = "❌"
+			}
+			fmt.Printf(" %s", padString(tektonStatus, tektonWidth))
+		}
+
+		fmt.Printf("\n")
+	}
 }
 
 func init() {
