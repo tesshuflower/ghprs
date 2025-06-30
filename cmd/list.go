@@ -416,6 +416,8 @@ const (
 	ApprovalResultSkip ApprovalResult = iota
 	ApprovalResultApprove
 	ApprovalResultHold
+	ApprovalResultQuit
+	ApprovalResultComment
 )
 
 func promptForApproval(pr PullRequest, owner, repo string, client api.RESTClient, config ApprovalConfig) ApprovalResult {
@@ -423,6 +425,20 @@ func promptForApproval(pr PullRequest, owner, repo string, client api.RESTClient
 	fmt.Printf("   Title: %s\n", pr.Title)
 	fmt.Printf("   Author: @%s\n", pr.User.Login)
 	fmt.Printf("   Branch: %s → %s\n", pr.Head.Ref, pr.Base.Ref)
+
+	// Show rebase status
+	if needsRebase(pr) {
+		fmt.Printf("   🔄 Rebase needed: PR is behind the target branch or has conflicts\n")
+	} else {
+		fmt.Printf("   ✅ Up to date: No rebase needed\n")
+	}
+
+	// Show blocked status
+	if isBlocked(pr) {
+		fmt.Printf("   🚫 Blocked: PR is blocked from merging (failed checks, missing reviews, etc.)\n")
+	} else {
+		fmt.Printf("   ✅ Not blocked: PR can be merged when ready\n")
+	}
 
 	// Get file count (and optionally display files if --show-files is used)
 	filesPath := fmt.Sprintf("repos/%s/%s/pulls/%d/files", owner, repo, pr.Number)
@@ -477,8 +493,8 @@ func promptForApproval(pr PullRequest, owner, repo string, client api.RESTClient
 
 	for {
 		// Build prompt based on what's already shown
-		promptOptions := []string{"y/N/q/h"}
-		promptHelp := []string{"h=hold"}
+		promptOptions := []string{"y/N/q/h/m"}
+		promptHelp := []string{"h=hold", "m=comment"}
 
 		if !showFiles {
 			promptOptions = append(promptOptions, "f")
@@ -501,7 +517,7 @@ func promptForApproval(pr PullRequest, owner, repo string, client api.RESTClient
 		}
 		promptStr += ": "
 
-		fmt.Printf(promptStr)
+		fmt.Print(promptStr)
 
 		reader := bufio.NewReader(os.Stdin)
 		response, err := reader.ReadString('\n')
@@ -522,8 +538,7 @@ func promptForApproval(pr PullRequest, owner, repo string, client api.RESTClient
 			return ApprovalResultApprove
 		case "q", "quit":
 			fmt.Println("Quitting approval process.")
-			os.Exit(0)
-			return ApprovalResultSkip // This won't be reached but satisfies the compiler
+			return ApprovalResultQuit
 		case "h", "hold":
 			// Prompt for additional comment
 			fmt.Printf("Enter an optional comment to add with /hold (or press Enter for none): ")
@@ -544,6 +559,31 @@ func promptForApproval(pr PullRequest, owner, repo string, client api.RESTClient
 
 			fmt.Printf("⏸️  Put PR %s on hold\n", formatPRLink(owner, repo, pr.Number))
 			return ApprovalResultHold
+		case "m", "comment":
+			// Prompt for comment
+			fmt.Printf("Enter your comment: ")
+			reader := bufio.NewReader(os.Stdin)
+			commentText, err := reader.ReadString('\n')
+			if err != nil {
+				fmt.Printf("Error reading comment: %v\n", err)
+				continue // Let user try again
+			}
+			commentText = strings.TrimSpace(commentText)
+
+			if commentText == "" {
+				fmt.Printf("Empty comment, skipping.\n")
+				continue // Let user try again
+			}
+
+			// Add the comment
+			err = addCommentToPR(client, owner, repo, pr.Number, commentText)
+			if err != nil {
+				fmt.Printf("❌ Failed to add comment to PR %s: %v\n", formatPRLink(owner, repo, pr.Number), err)
+				continue // Let user try again
+			}
+
+			fmt.Printf("💬 Added comment to PR %s\n", formatPRLink(owner, repo, pr.Number))
+			return ApprovalResultComment
 		case "f", "files":
 			if showFiles {
 				fmt.Printf("\n📁 File list already shown above.\n")
@@ -594,18 +634,158 @@ func promptForApproval(pr PullRequest, owner, repo string, client api.RESTClient
 }
 
 func approvePRsWithConfig(client api.RESTClient, owner, repo string, pullRequests []PullRequest, config ApprovalConfig) {
-	approvedCount := 0
-	skippedCount := 0
-	alreadyApprovedCount := 0
-	userSkippedCount := 0
-	heldCount := 0
-
 	prType := "PRs"
 	if config.IsKonflux {
 		prType = "Konflux PRs"
 	}
 	fmt.Printf("\n🎯 Interactive approval mode for %d %s\n", len(pullRequests), prType)
 
+	// Keep track of processed PRs to remove them from subsequent displays
+	processedPRs := make(map[int]bool)
+	approvedCount := 0
+	skippedCount := 0
+	heldCount := 0
+	commentedCount := 0
+
+	for {
+		// Filter out PRs that can't be approved (closed, draft, on hold) and already processed
+		var approvablePRs []PullRequest
+		var displayPRs []PullRequest
+		var prIndexMap = make(map[int]int) // Maps PR number to index in approvablePRs
+
+		for _, pr := range pullRequests {
+			// Skip already processed PRs
+			if processedPRs[pr.Number] {
+				continue
+			}
+
+			// Add to display list (for table)
+			displayPRs = append(displayPRs, pr)
+
+			// Add to approvable list if eligible
+			if pr.State == "open" && !pr.Draft && !isOnHold(pr) {
+				prIndexMap[pr.Number] = len(approvablePRs)
+				approvablePRs = append(approvablePRs, pr)
+			}
+		}
+
+		// Check if we have any PRs left to display
+		if len(displayPRs) == 0 {
+			fmt.Printf("\n✅ All PRs have been processed!\n")
+			break
+		}
+
+		// Display the PR table (excluding processed PRs)
+		fmt.Printf("═══════════════════════════════════════════════════════════════\n")
+		displayPRTable(displayPRs, owner, repo, &client, config.IsKonflux)
+		fmt.Printf("═══════════════════════════════════════════════════════════════\n")
+
+		// Check if we have any approvable PRs left
+		if len(approvablePRs) == 0 {
+			fmt.Printf("❌ No more PRs available for approval (remaining are closed, draft, or on hold)\n")
+			break
+		}
+
+		// Prompt for PR selection
+		fmt.Printf("\n📝 Select PR to approve:\n")
+		fmt.Printf("   Enter PR number (default: %d for first approvable PR)\n", approvablePRs[0].Number)
+		fmt.Printf("   Or press 'q' to quit\n")
+		fmt.Printf("   Available for approval: ")
+
+		var availableNumbers []string
+		for _, pr := range approvablePRs {
+			availableNumbers = append(availableNumbers, fmt.Sprintf("#%d", pr.Number))
+		}
+		fmt.Printf("%s\n", strings.Join(availableNumbers, ", "))
+
+		fmt.Print("\nPR to approve: ")
+
+		reader := bufio.NewReader(os.Stdin)
+		input, err := reader.ReadString('\n')
+		if err != nil {
+			if err == io.EOF {
+				fmt.Printf("(EOF - exiting approval process)\n")
+				break
+			}
+			fmt.Printf("Error reading input: %v\n", err)
+			break
+		}
+
+		input = strings.TrimSpace(input)
+
+		// Handle quit
+		if strings.ToLower(input) == "q" || strings.ToLower(input) == "quit" {
+			fmt.Println("Exiting approval process.")
+			break
+		}
+
+		// Determine which PR to approve
+		var selectedPR *PullRequest
+
+		if input == "" {
+			// Default to first approvable PR
+			selectedPR = &approvablePRs[0]
+			fmt.Printf("Using default PR: #%d\n", selectedPR.Number)
+		} else {
+			// Parse the PR number (remove # prefix if present)
+			input = strings.TrimPrefix(input, "#")
+
+			prNumber, err := strconv.Atoi(input)
+			if err != nil {
+				fmt.Printf("❌ Invalid PR number: %s\n", input)
+				fmt.Printf("Press Enter to continue or 'q' to quit.\n")
+				continue
+			}
+
+			// Find the PR in our approvable list
+			index, exists := prIndexMap[prNumber]
+			if !exists {
+				fmt.Printf("❌ PR #%d is not available for approval (may be closed, draft, on hold, or not exist)\n", prNumber)
+				fmt.Printf("   Available PRs: %s\n", strings.Join(availableNumbers, ", "))
+				fmt.Printf("Press Enter to continue or 'q' to quit.\n")
+				continue
+			}
+
+			selectedPR = &approvablePRs[index]
+			fmt.Printf("Selected PR: #%d\n", selectedPR.Number)
+		}
+
+		// Now proceed with the approval flow for the selected PR
+		fmt.Printf("═══════════════════════════════════════════════════════════════\n")
+		result := approveSinglePR(client, owner, repo, *selectedPR, config)
+
+		// Mark this PR as processed and update counters
+		processedPRs[selectedPR.Number] = true
+		switch result {
+		case ApprovalResultApprove:
+			approvedCount++
+		case ApprovalResultSkip:
+			skippedCount++
+		case ApprovalResultHold:
+			heldCount++
+		case ApprovalResultComment:
+			commentedCount++
+		case ApprovalResultQuit:
+			fmt.Println("Exiting approval process.")
+			goto exitLoop
+		}
+
+		fmt.Printf("\n")
+	}
+
+exitLoop:
+	// Print final summary
+	fmt.Printf("═══════════════════════════════════════════════════════════════\n")
+	fmt.Printf("📊 Final Approval Summary:\n")
+	fmt.Printf("   ✅ Approved: %d\n", approvedCount)
+	fmt.Printf("   ❌ Skipped: %d\n", skippedCount)
+	fmt.Printf("   ⏸️  Put on hold: %d\n", heldCount)
+	fmt.Printf("   💬 Commented: %d\n", commentedCount)
+	fmt.Printf("   📊 Total processed: %d\n", approvedCount+skippedCount+heldCount+commentedCount)
+}
+
+// approveSinglePR handles the approval process for a single PR
+func approveSinglePR(client api.RESTClient, owner, repo string, pr PullRequest, config ApprovalConfig) ApprovalResult {
 	// Build help message based on what's already shown
 	helpOptions := []string{"[y]es to approve", "[N]o to skip (default)", "[h]old", "[q]uit"}
 	if !showFiles {
@@ -619,100 +799,79 @@ func approvePRsWithConfig(client api.RESTClient, owner, repo string, pullRequest
 	fmt.Printf("Commands: %s\n", strings.Join(helpOptions, ", "))
 	fmt.Printf("═══════════════════════════════════════════════════════════════\n")
 
-	for _, pr := range pullRequests {
-		// Only approve open PRs
-		if pr.State != "open" {
-			fmt.Printf("⏭️  Auto-skipping %s (state: %s): %s\n", formatPRLink(owner, repo, pr.Number), pr.State, pr.Title)
-			skippedCount++
-			continue
-		}
-
-		// Skip draft PRs
-		if pr.Draft {
-			fmt.Printf("⏭️  Auto-skipping %s (draft): %s\n", formatPRLink(owner, repo, pr.Number), pr.Title)
-			skippedCount++
-			continue
-		}
-
-		// Skip PRs that are on hold
-		if isOnHold(pr) {
-			fmt.Printf("⏭️  Auto-skipping %s (on hold): %s\n", formatPRLink(owner, repo, pr.Number), pr.Title)
-			skippedCount++
-			continue
-		}
-
-		// Check if PR is already approved by current user
-		reviewsPath := fmt.Sprintf("repos/%s/%s/pulls/%d/reviews", owner, repo, pr.Number)
-		var reviews []Review
-		err := client.Get(reviewsPath, &reviews)
-		if err != nil {
-			fmt.Printf("⚠️  Could not check existing reviews for %s: %v\n", formatPRLink(owner, repo, pr.Number), err)
-			// Continue with prompt despite error
-		} else {
-			// Check if we already have an approval from any user
-			alreadyApproved := false
-			for _, review := range reviews {
-				if review.State == "APPROVED" {
-					alreadyApproved = true
-					break
-				}
-			}
-
-			if alreadyApproved {
-				fmt.Printf("✅ Already approved %s: %s\n", formatPRLink(owner, repo, pr.Number), pr.Title)
-				alreadyApprovedCount++
-				continue
+	// Check if PR is already approved by current user
+	reviewsPath := fmt.Sprintf("repos/%s/%s/pulls/%d/reviews", owner, repo, pr.Number)
+	var reviews []Review
+	err := client.Get(reviewsPath, &reviews)
+	if err != nil {
+		fmt.Printf("⚠️  Could not check existing reviews for %s: %v\n", formatPRLink(owner, repo, pr.Number), err)
+		// Continue with prompt despite error
+	} else {
+		// Check if we already have an approval from any user
+		alreadyApproved := false
+		for _, review := range reviews {
+			if review.State == "APPROVED" {
+				alreadyApproved = true
+				break
 			}
 		}
 
-		// Prompt user for approval decision
-		result := promptForApproval(pr, owner, repo, client, config)
-		switch result {
-		case ApprovalResultSkip:
-			userSkippedCount++
-			continue
-		case ApprovalResultHold:
-			heldCount++
-			continue
-		case ApprovalResultApprove:
-			// Continue with approval process below
+		if alreadyApproved {
+			fmt.Printf("✅ PR %s is already approved: %s\n", formatPRLink(owner, repo, pr.Number), pr.Title)
+			fmt.Printf("Do you want to continue anyway? [y/N]: ")
+
+			reader := bufio.NewReader(os.Stdin)
+			response, err := reader.ReadString('\n')
+			if err != nil || strings.ToLower(strings.TrimSpace(response)) != "y" {
+				fmt.Printf("Skipping already approved PR.\n")
+				return ApprovalResultSkip
+			}
 		}
-
-		// Create approval review
-		reviewPath := fmt.Sprintf("repos/%s/%s/pulls/%d/reviews", owner, repo, pr.Number)
-		review := ReviewRequest{
-			Body:  "/lgtm",
-			Event: "APPROVE",
-		}
-
-		// Convert review to JSON
-		reviewJSON, err := json.Marshal(review)
-		if err != nil {
-			fmt.Printf("❌ Failed to marshal review for %s: %v\n", formatPRLink(owner, repo, pr.Number), err)
-			continue
-		}
-
-		fmt.Printf("✅ Approving %s: %s\n", formatPRLink(owner, repo, pr.Number), pr.Title)
-
-		// Add the approval review
-		err = client.Post(reviewPath, bytes.NewReader(reviewJSON), nil)
-		if err != nil {
-			fmt.Printf("❌ Failed to approve %s: %v\n", formatPRLink(owner, repo, pr.Number), err)
-			continue
-		}
-
-		approvedCount++
-		fmt.Printf("   ✓ Successfully approved %s\n", formatPRLink(owner, repo, pr.Number))
 	}
 
-	// Print summary
-	fmt.Printf("\n📊 Approval Summary:\n")
-	fmt.Printf("   ✅ Approved: %d\n", approvedCount)
-	fmt.Printf("   ⏭️  Auto-skipped: %d\n", skippedCount)
-	fmt.Printf("   ✅ Already approved: %d\n", alreadyApprovedCount)
-	fmt.Printf("   ❌ User skipped: %d\n", userSkippedCount)
-	fmt.Printf("   ⏸️  Put on hold: %d\n", heldCount)
-	fmt.Printf("   📊 Total processed: %d\n", len(pullRequests))
+	// Prompt user for approval decision
+	result := promptForApproval(pr, owner, repo, client, config)
+	switch result {
+	case ApprovalResultSkip:
+		fmt.Printf("❌ Skipped PR %s\n", formatPRLink(owner, repo, pr.Number))
+		return ApprovalResultSkip
+	case ApprovalResultHold:
+		fmt.Printf("⏸️  Put PR %s on hold\n", formatPRLink(owner, repo, pr.Number))
+		return ApprovalResultHold
+	case ApprovalResultQuit:
+		return ApprovalResultQuit
+	case ApprovalResultComment:
+		fmt.Printf("💬 Added comment to PR %s\n", formatPRLink(owner, repo, pr.Number))
+		return ApprovalResultComment
+	case ApprovalResultApprove:
+		// Continue with approval process below
+	}
+
+	// Create approval review
+	reviewPath := fmt.Sprintf("repos/%s/%s/pulls/%d/reviews", owner, repo, pr.Number)
+	review := ReviewRequest{
+		Body:  "/lgtm",
+		Event: "APPROVE",
+	}
+
+	// Convert review to JSON
+	reviewJSON, err := json.Marshal(review)
+	if err != nil {
+		fmt.Printf("❌ Failed to marshal review for %s: %v\n", formatPRLink(owner, repo, pr.Number), err)
+		return ApprovalResultSkip
+	}
+
+	fmt.Printf("✅ Approving %s: %s\n", formatPRLink(owner, repo, pr.Number), pr.Title)
+
+	// Add the approval review
+	err = client.Post(reviewPath, bytes.NewReader(reviewJSON), nil)
+	if err != nil {
+		fmt.Printf("❌ Failed to approve %s: %v\n", formatPRLink(owner, repo, pr.Number), err)
+		return ApprovalResultSkip
+	}
+
+	fmt.Printf("   ✓ Successfully approved %s\n", formatPRLink(owner, repo, pr.Number))
+	return ApprovalResultApprove
 }
 
 // isOnHold checks if a PR has the "do-not-merge/hold" label
@@ -723,6 +882,21 @@ func isOnHold(pr PullRequest) bool {
 		}
 	}
 	return false
+}
+
+// needsRebase checks if a PR needs a rebase based on mergeable_state
+func needsRebase(pr PullRequest) bool {
+	switch pr.MergeableState {
+	case "dirty", "behind":
+		return true
+	default:
+		return false
+	}
+}
+
+// isBlocked checks if a PR is blocked from merging based on mergeable_state
+func isBlocked(pr PullRequest) bool {
+	return pr.MergeableState == "blocked"
 }
 
 // isReviewed checks if a PR has any approved reviews
@@ -1031,6 +1205,28 @@ func holdPR(client api.RESTClient, owner, repo string, prNumber int, additionalC
 	return nil
 }
 
+// addCommentToPR adds a comment to a pull request
+func addCommentToPR(client api.RESTClient, owner, repo string, prNumber int, commentText string) error {
+	commentPath := fmt.Sprintf("repos/%s/%s/issues/%d/comments", owner, repo, prNumber)
+	comment := CommentRequest{
+		Body: commentText,
+	}
+
+	// Convert comment to JSON
+	commentJSON, err := json.Marshal(comment)
+	if err != nil {
+		return fmt.Errorf("failed to marshal comment: %v", err)
+	}
+
+	// Add the comment
+	err = client.Post(commentPath, bytes.NewReader(commentJSON), nil)
+	if err != nil {
+		return fmt.Errorf("failed to post comment: %v", err)
+	}
+
+	return nil
+}
+
 // getStatusIcon returns the appropriate icon and status for a PR
 func getStatusIcon(pr PullRequest) string {
 	onHold := isOnHold(pr)
@@ -1239,7 +1435,7 @@ func displayDiff(owner, repo string, prNumber int) error {
 	if err != nil {
 		return fmt.Errorf("failed to fetch diff: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != 200 {
 		return fmt.Errorf("failed to fetch diff: HTTP %d", resp.StatusCode)
@@ -1359,8 +1555,8 @@ func formatPRLink(owner, repo string, prNumber int) string {
 }
 
 // truncateString truncates a string to a maximum display width with ellipsis
-func truncateString(s string, maxWidth int) string {
-	if displayWidth(s) <= maxWidth {
+func TruncateString(s string, maxWidth int) string {
+	if DisplayWidth(s) <= maxWidth {
 		return s
 	}
 	if maxWidth <= 3 {
@@ -1398,9 +1594,9 @@ func truncateString(s string, maxWidth int) string {
 }
 
 // displayWidth calculates the visual width of a string in the terminal
-func displayWidth(s string) int {
+func DisplayWidth(s string) int {
 	// Remove ANSI escape sequences (including OSC 8 sequences for links)
-	cleanString := stripANSISequences(s)
+	cleanString := StripANSISequences(s)
 
 	width := 0
 	for _, r := range cleanString {
@@ -1424,7 +1620,7 @@ func displayWidth(s string) int {
 }
 
 // stripANSISequences removes ANSI escape sequences from a string
-func stripANSISequences(s string) string {
+func StripANSISequences(s string) string {
 	result := strings.Builder{}
 	i := 0
 	runes := []rune(s)
@@ -1476,8 +1672,8 @@ func stripANSISequences(s string) string {
 }
 
 // padString pads a string to a specific width, accounting for actual display width
-func padString(s string, width int) string {
-	currentWidth := displayWidth(s)
+func PadString(s string, width int) string {
+	currentWidth := DisplayWidth(s)
 	if currentWidth >= width {
 		return s
 	}
@@ -1490,6 +1686,8 @@ func displayLegend(isKonflux bool) {
 	fmt.Println("Legend:")
 	fmt.Println("  Status: 🟢 open  🟡 draft  🔶 on hold  🔴 closed  🟣 merged")
 	fmt.Println("  Reviewed: ✅ approved  ❌ not approved")
+	fmt.Println("  Rebase: ✅ up to date  🔄 needs rebase")
+	fmt.Println("  Blocked: ✅ not blocked  🚫 blocked from merging")
 	if isKonflux {
 		fmt.Println("  Tekton: ✅ exclusively Tekton files  ❌ mixed/other files")
 		fmt.Println("  🚨 = migration warning")
@@ -1510,39 +1708,48 @@ func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.
 	const (
 		statusWidth   = 2  // Emoji width
 		prWidth       = 6  // "#1234"
-		titleWidth    = 45 // Shorter titles
-		authorWidth   = 20 // Author names (increased for longer usernames)
-		branchWidth   = 14 // Branch names
+		titleWidth    = 41 // Shorter titles (reduced to fit blocked column)
+		authorWidth   = 16 // Author names (reduced to fit blocked column)
+		branchWidth   = 14 // Source branch names
+		targetWidth   = 12 // Target branch names
 		stateWidth    = 10 // "STATUS"
 		reviewedWidth = 8  // "REVIEWED"
+		rebaseWidth   = 6  // "REBASE"
+		blockedWidth  = 7  // "BLOCKED"
 		tektonWidth   = 6  // "TEKTON"
 	)
 
 	// Print table header
-	fmt.Printf("%s %s %s %s %s %s %s",
-		padString("ST", statusWidth),
-		padString("PR", prWidth),
-		padString("TITLE", titleWidth),
-		padString("AUTHOR", authorWidth),
-		padString("BRANCH", branchWidth),
-		padString("STATUS", stateWidth),
-		padString("REVIEWED", reviewedWidth))
+	fmt.Printf("%s %s %s %s %s %s %s %s %s %s",
+		PadString("ST", statusWidth),
+		PadString("PR", prWidth),
+		PadString("TITLE", titleWidth),
+		PadString("AUTHOR", authorWidth),
+		PadString("BRANCH", branchWidth),
+		PadString("TARGET", targetWidth),
+		PadString("STATUS", stateWidth),
+		PadString("REVIEWED", reviewedWidth),
+		PadString("REBASE", rebaseWidth),
+		PadString("BLOCKED", blockedWidth))
 	if isKonflux {
-		fmt.Printf(" %s", padString("TEKTON", tektonWidth))
+		fmt.Printf(" %s", PadString("TEKTON", tektonWidth))
 	}
 	fmt.Printf("\n")
 
 	// Print separator line
-	fmt.Printf("%s %s %s %s %s %s %s",
-		padString(strings.Repeat("-", statusWidth), statusWidth),
-		padString(strings.Repeat("-", prWidth), prWidth),
-		padString(strings.Repeat("-", titleWidth), titleWidth),
-		padString(strings.Repeat("-", authorWidth), authorWidth),
-		padString(strings.Repeat("-", branchWidth), branchWidth),
-		padString(strings.Repeat("-", stateWidth), stateWidth),
-		padString(strings.Repeat("-", reviewedWidth), reviewedWidth))
+	fmt.Printf("%s %s %s %s %s %s %s %s %s %s",
+		PadString(strings.Repeat("-", statusWidth), statusWidth),
+		PadString(strings.Repeat("-", prWidth), prWidth),
+		PadString(strings.Repeat("-", titleWidth), titleWidth),
+		PadString(strings.Repeat("-", authorWidth), authorWidth),
+		PadString(strings.Repeat("-", branchWidth), branchWidth),
+		PadString(strings.Repeat("-", targetWidth), targetWidth),
+		PadString(strings.Repeat("-", stateWidth), stateWidth),
+		PadString(strings.Repeat("-", reviewedWidth), reviewedWidth),
+		PadString(strings.Repeat("-", rebaseWidth), rebaseWidth),
+		PadString(strings.Repeat("-", blockedWidth), blockedWidth))
 	if isKonflux {
-		fmt.Printf(" %s", padString(strings.Repeat("-", tektonWidth), tektonWidth))
+		fmt.Printf(" %s", PadString(strings.Repeat("-", tektonWidth), tektonWidth))
 	}
 	fmt.Printf("\n")
 
@@ -1555,6 +1762,8 @@ func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.
 			onlyTektonFiles, _, err = checkTektonFilesDetailed(*client, owner, repo, pr.Number)
 			if err != nil {
 				// Silently continue if we can't check Tekton files for table display
+				// Error is intentionally ignored for display purposes
+				_ = err
 			}
 		}
 
@@ -1584,9 +1793,10 @@ func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.
 
 		// Prepare table data
 		prLink := formatPRLink(owner, repo, pr.Number)
-		title := truncateString(pr.Title, titleWidth)
-		author := truncateString(pr.User.Login, authorWidth)
-		branch := truncateString(pr.Head.Ref, branchWidth)
+		title := TruncateString(pr.Title, titleWidth)
+		author := TruncateString(pr.User.Login, authorWidth)
+		branch := TruncateString(pr.Head.Ref, branchWidth)
+		target := TruncateString(pr.Base.Ref, targetWidth)
 
 		// Determine status text
 		status := ""
@@ -1600,7 +1810,7 @@ func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.
 		if hasMigration {
 			status += " 🚨"
 		}
-		status = truncateString(status, stateWidth)
+		status = TruncateString(status, stateWidth)
 
 		// Determine reviewed status
 		reviewedStatus := ""
@@ -1610,15 +1820,34 @@ func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.
 			reviewedStatus = "❌"
 		}
 
+		// Determine rebase status
+		rebaseStatus := ""
+		if needsRebase(pr) {
+			rebaseStatus = "🔄"
+		} else {
+			rebaseStatus = "✅"
+		}
+
+		// Determine blocked status
+		blockedStatus := ""
+		if isBlocked(pr) {
+			blockedStatus = "🚫"
+		} else {
+			blockedStatus = "✅"
+		}
+
 		// Print the row with proper padding
-		fmt.Printf("%s %s %s %s %s %s %s",
-			padString(icon, statusWidth),
-			padString(prLink, prWidth),
-			padString(title, titleWidth),
-			padString(author, authorWidth),
-			padString(branch, branchWidth),
-			padString(status, stateWidth),
-			padString(reviewedStatus, reviewedWidth))
+		fmt.Printf("%s %s %s %s %s %s %s %s %s %s",
+			PadString(icon, statusWidth),
+			PadString(prLink, prWidth),
+			PadString(title, titleWidth),
+			PadString(author, authorWidth),
+			PadString(branch, branchWidth),
+			PadString(target, targetWidth),
+			PadString(status, stateWidth),
+			PadString(reviewedStatus, reviewedWidth),
+			PadString(rebaseStatus, rebaseWidth),
+			PadString(blockedStatus, blockedWidth))
 
 		if isKonflux {
 			tektonStatus := ""
@@ -1627,7 +1856,7 @@ func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.
 			} else {
 				tektonStatus = "❌"
 			}
-			fmt.Printf(" %s", padString(tektonStatus, tektonWidth))
+			fmt.Printf(" %s", PadString(tektonStatus, tektonWidth))
 		}
 
 		fmt.Printf("\n")
