@@ -352,7 +352,7 @@ func listPullRequests(args []string, authorFilter string, isKonflux bool) {
 				var err error
 				onlyTektonFiles, tektonFiles, err = checkTektonFilesDetailed(*client, owner, repo, pr.Number)
 				if err != nil {
-					fmt.Printf("⚠️  Could not check files for PR #%d: %v\n", pr.Number, err)
+					fmt.Printf("⚠️  Could not check files for PR %s: %v\n", formatPRLink(owner, repo, pr.Number), err)
 				}
 			}
 
@@ -380,7 +380,7 @@ func listPullRequests(args []string, authorFilter string, isKonflux bool) {
 				icon = getStatusIcon(pr)
 			}
 
-			fmt.Printf("%s #%-4d %s\n", icon, pr.Number, pr.Title)
+			fmt.Printf("%s %s %s\n", icon, formatPRLink(owner, repo, pr.Number), pr.Title)
 			fmt.Printf("        %s → %s by @%s\n", pr.Head.Ref, pr.Base.Ref, pr.User.Login)
 			if isKonflux && onlyTektonFiles && len(tektonFiles) > 0 {
 				fmt.Printf("        📁 Tekton-only files: %s\n", strings.Join(tektonFiles, ", "))
@@ -388,7 +388,7 @@ func listPullRequests(args []string, authorFilter string, isKonflux bool) {
 			if isKonflux && hasMigration {
 				fmt.Printf("        🚨 Contains migration warnings\n")
 			}
-			fmt.Printf("        %s\n\n", pr.HTMLURL)
+			fmt.Printf("\n")
 		}
 	}
 }
@@ -404,11 +404,10 @@ const (
 )
 
 func promptForApproval(pr PullRequest, owner, repo string, client api.RESTClient, config ApprovalConfig) ApprovalResult {
-	fmt.Printf("\n🔍 Review PR #%d:\n", pr.Number)
+	fmt.Printf("\n🔍 Review PR %s:\n", formatPRLink(owner, repo, pr.Number))
 	fmt.Printf("   Title: %s\n", pr.Title)
 	fmt.Printf("   Author: @%s\n", pr.User.Login)
 	fmt.Printf("   Branch: %s → %s\n", pr.Head.Ref, pr.Base.Ref)
-	fmt.Printf("   URL: %s\n", pr.HTMLURL)
 
 	// Get file count (and optionally display files if --show-files is used)
 	filesPath := fmt.Sprintf("repos/%s/%s/pulls/%d/files", owner, repo, pr.Number)
@@ -524,18 +523,18 @@ func promptForApproval(pr PullRequest, owner, repo string, client api.RESTClient
 			// Hold the PR
 			err = holdPR(client, owner, repo, pr.Number, additionalComment)
 			if err != nil {
-				fmt.Printf("❌ Failed to hold PR #%d: %v\n", pr.Number, err)
+				fmt.Printf("❌ Failed to hold PR %s: %v\n", formatPRLink(owner, repo, pr.Number), err)
 				continue // Let user try again
 			}
 
-			fmt.Printf("⏸️  Put PR #%d on hold\n", pr.Number)
+			fmt.Printf("⏸️  Put PR %s on hold\n", formatPRLink(owner, repo, pr.Number))
 			return ApprovalResultHold
 		case "f", "files":
 			if showFiles {
 				fmt.Printf("\n📁 File list already shown above.\n")
 			} else {
 				// Show detailed file list
-				fmt.Printf("\n📁 Detailed file list for PR #%d:\n", pr.Number)
+				fmt.Printf("\n📁 Detailed file list for PR %s:\n", formatPRLink(owner, repo, pr.Number))
 				filesPath := fmt.Sprintf("repos/%s/%s/pulls/%d/files", owner, repo, pr.Number)
 				var files []PRFile
 				err := client.Get(filesPath, &files)
@@ -569,7 +568,7 @@ func promptForApproval(pr PullRequest, owner, repo string, client api.RESTClient
 			// Continue the loop to ask again
 			continue
 		case "", "n", "no":
-			fmt.Printf("Skipping PR #%d\n", pr.Number)
+			fmt.Printf("Skipping PR %s\n", formatPRLink(owner, repo, pr.Number))
 			return ApprovalResultSkip
 		default:
 			fmt.Printf("Invalid option '%s'. Please choose from the available options.\n", response)
@@ -608,21 +607,21 @@ func approvePRsWithConfig(client api.RESTClient, owner, repo string, pullRequest
 	for _, pr := range pullRequests {
 		// Only approve open PRs
 		if pr.State != "open" {
-			fmt.Printf("⏭️  Auto-skipping #%d (state: %s): %s\n", pr.Number, pr.State, pr.Title)
+			fmt.Printf("⏭️  Auto-skipping %s (state: %s): %s\n", formatPRLink(owner, repo, pr.Number), pr.State, pr.Title)
 			skippedCount++
 			continue
 		}
 
 		// Skip draft PRs
 		if pr.Draft {
-			fmt.Printf("⏭️  Auto-skipping #%d (draft): %s\n", pr.Number, pr.Title)
+			fmt.Printf("⏭️  Auto-skipping %s (draft): %s\n", formatPRLink(owner, repo, pr.Number), pr.Title)
 			skippedCount++
 			continue
 		}
 
 		// Skip PRs that are on hold
 		if isOnHold(pr) {
-			fmt.Printf("⏭️  Auto-skipping #%d (on hold): %s\n", pr.Number, pr.Title)
+			fmt.Printf("⏭️  Auto-skipping %s (on hold): %s\n", formatPRLink(owner, repo, pr.Number), pr.Title)
 			skippedCount++
 			continue
 		}
@@ -632,7 +631,7 @@ func approvePRsWithConfig(client api.RESTClient, owner, repo string, pullRequest
 		var reviews []Review
 		err := client.Get(reviewsPath, &reviews)
 		if err != nil {
-			fmt.Printf("⚠️  Could not check existing reviews for #%d: %v\n", pr.Number, err)
+			fmt.Printf("⚠️  Could not check existing reviews for %s: %v\n", formatPRLink(owner, repo, pr.Number), err)
 			// Continue with prompt despite error
 		} else {
 			// Check if we already have an approval from any user
@@ -645,7 +644,7 @@ func approvePRsWithConfig(client api.RESTClient, owner, repo string, pullRequest
 			}
 
 			if alreadyApproved {
-				fmt.Printf("✅ Already approved #%d: %s\n", pr.Number, pr.Title)
+				fmt.Printf("✅ Already approved %s: %s\n", formatPRLink(owner, repo, pr.Number), pr.Title)
 				alreadyApprovedCount++
 				continue
 			}
@@ -674,21 +673,21 @@ func approvePRsWithConfig(client api.RESTClient, owner, repo string, pullRequest
 		// Convert review to JSON
 		reviewJSON, err := json.Marshal(review)
 		if err != nil {
-			fmt.Printf("❌ Failed to marshal review for #%d: %v\n", pr.Number, err)
+			fmt.Printf("❌ Failed to marshal review for %s: %v\n", formatPRLink(owner, repo, pr.Number), err)
 			continue
 		}
 
-		fmt.Printf("✅ Approving #%d: %s\n", pr.Number, pr.Title)
+		fmt.Printf("✅ Approving %s: %s\n", formatPRLink(owner, repo, pr.Number), pr.Title)
 
 		// Add the approval review
 		err = client.Post(reviewPath, bytes.NewReader(reviewJSON), nil)
 		if err != nil {
-			fmt.Printf("❌ Failed to approve #%d: %v\n", pr.Number, err)
+			fmt.Printf("❌ Failed to approve %s: %v\n", formatPRLink(owner, repo, pr.Number), err)
 			continue
 		}
 
 		approvedCount++
-		fmt.Printf("   ✓ Successfully approved #%d\n", pr.Number)
+		fmt.Printf("   ✓ Successfully approved %s\n", formatPRLink(owner, repo, pr.Number))
 	}
 
 	// Print summary
@@ -874,7 +873,7 @@ func displayCheckStatus(client api.RESTClient, owner, repo string, prNumber int,
 
 // displayDetailedCheckStatus shows detailed information about all checks for a PR
 func displayDetailedCheckStatus(client api.RESTClient, owner, repo string, prNumber int, headSHA string) {
-	fmt.Printf("\n🔍 Detailed check status for PR #%d:\n", prNumber)
+	fmt.Printf("\n🔍 Detailed check status for PR %s:\n", formatPRLink(owner, repo, prNumber))
 
 	// Get check runs (newer GitHub checks API)
 	checkRunsPath := fmt.Sprintf("repos/%s/%s/commits/%s/check-runs", owner, repo, headSHA)
@@ -1241,7 +1240,7 @@ func displayDiff(owner, repo string, prNumber int) error {
 	}
 
 	// Display the diff with color coding
-	fmt.Printf("\n📄 Diff for PR #%d:\n", prNumber)
+	fmt.Printf("\n📄 Diff for PR %s:\n", formatPRLink(owner, repo, prNumber))
 	fmt.Printf("═══════════════════════════════════════════════════════════════\n")
 
 	// Apply color coding to the diff (unless colors are disabled)
@@ -1334,6 +1333,17 @@ func shouldUseColors() bool {
 
 	// Check if output is going to a terminal
 	return term.IsTerminal(int(os.Stdout.Fd()))
+}
+
+// formatPRLink creates a clickable link for a PR number using OSC 8 escape sequences
+func formatPRLink(owner, repo string, prNumber int) string {
+	// Check if we should use terminal features (similar to color check)
+	if noColor || os.Getenv("NO_COLOR") != "" || !term.IsTerminal(int(os.Stdout.Fd())) {
+		return fmt.Sprintf("#%d", prNumber)
+	}
+
+	url := fmt.Sprintf("https://github.com/%s/%s/pull/%d", owner, repo, prNumber)
+	return fmt.Sprintf("\033]8;;%s\033\\#%d\033]8;;\033\\", url, prNumber)
 }
 
 func init() {
