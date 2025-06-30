@@ -1512,19 +1512,21 @@ func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.
 		prWidth       = 6  // "#1234"
 		titleWidth    = 45 // Shorter titles
 		authorWidth   = 20 // Author names (increased for longer usernames)
-		branchWidth   = 14 // Branch names
+		branchWidth   = 14 // Source branch names
+		targetWidth   = 12 // Target branch names
 		stateWidth    = 10 // "STATUS"
 		reviewedWidth = 8  // "REVIEWED"
 		tektonWidth   = 6  // "TEKTON"
 	)
 
 	// Print table header
-	fmt.Printf("%s %s %s %s %s %s %s",
+	fmt.Printf("%s %s %s %s %s %s %s %s",
 		padString("ST", statusWidth),
 		padString("PR", prWidth),
 		padString("TITLE", titleWidth),
 		padString("AUTHOR", authorWidth),
 		padString("BRANCH", branchWidth),
+		padString("TARGET", targetWidth),
 		padString("STATUS", stateWidth),
 		padString("REVIEWED", reviewedWidth))
 	if isKonflux {
@@ -1533,12 +1535,13 @@ func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.
 	fmt.Printf("\n")
 
 	// Print separator line
-	fmt.Printf("%s %s %s %s %s %s %s",
+	fmt.Printf("%s %s %s %s %s %s %s %s",
 		padString(strings.Repeat("-", statusWidth), statusWidth),
 		padString(strings.Repeat("-", prWidth), prWidth),
 		padString(strings.Repeat("-", titleWidth), titleWidth),
 		padString(strings.Repeat("-", authorWidth), authorWidth),
 		padString(strings.Repeat("-", branchWidth), branchWidth),
+		padString(strings.Repeat("-", targetWidth), targetWidth),
 		padString(strings.Repeat("-", stateWidth), stateWidth),
 		padString(strings.Repeat("-", reviewedWidth), reviewedWidth))
 	if isKonflux {
@@ -1587,6 +1590,7 @@ func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.
 		title := truncateString(pr.Title, titleWidth)
 		author := truncateString(pr.User.Login, authorWidth)
 		branch := truncateString(pr.Head.Ref, branchWidth)
+		target := truncateString(pr.Base.Ref, targetWidth)
 
 		// Determine status text
 		status := ""
@@ -1611,12 +1615,13 @@ func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.
 		}
 
 		// Print the row with proper padding
-		fmt.Printf("%s %s %s %s %s %s %s",
+		fmt.Printf("%s %s %s %s %s %s %s %s",
 			padString(icon, statusWidth),
 			padString(prLink, prWidth),
 			padString(title, titleWidth),
 			padString(author, authorWidth),
 			padString(branch, branchWidth),
+			padString(target, targetWidth),
 			padString(status, stateWidth),
 			padString(reviewedStatus, reviewedWidth))
 
