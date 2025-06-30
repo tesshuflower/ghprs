@@ -55,6 +55,7 @@ type User struct {
 
 type Branch struct {
 	Ref string `json:"ref"`
+	SHA string `json:"sha"`
 }
 
 type Label struct {
@@ -87,6 +88,38 @@ type PRFile struct {
 // LabelRequest represents a request to add labels to an issue/PR
 type LabelRequest struct {
 	Labels []string `json:"labels"`
+}
+
+// CheckRun represents a GitHub check run
+type CheckRun struct {
+	Name       string `json:"name"`
+	Status     string `json:"status"`     // "queued", "in_progress", "completed"
+	Conclusion string `json:"conclusion"` // "success", "failure", "neutral", "cancelled", "timed_out", "action_required", "skipped"
+	HTMLURL    string `json:"html_url"`
+}
+
+// CheckRunsResponse represents the response from the check runs API
+type CheckRunsResponse struct {
+	TotalCount int        `json:"total_count"`
+	CheckRuns  []CheckRun `json:"check_runs"`
+}
+
+// StatusCheck represents a GitHub status check (legacy)
+type StatusCheck struct {
+	State       string `json:"state"` // "pending", "success", "error", "failure"
+	Description string `json:"description"`
+	Context     string `json:"context"`
+	TargetURL   string `json:"target_url"`
+}
+
+// CheckStatus represents the combined status of all checks
+type CheckStatus struct {
+	Passed    int
+	Failed    int
+	Pending   int
+	Cancelled int
+	Skipped   int
+	Total     int
 }
 
 var (
@@ -123,7 +156,7 @@ Examples:
   ghprs list --approve                       # Interactively approve PRs (review + /lgtm comment)
   ghprs list --approve --show-files          # Approve with detailed file lists
   ghprs list --approve --show-diff           # Approve with detailed diff display
-  ghprs list --approve                       # Interactive approval (use 'f' to view files, 'd' to view diff)`,
+  ghprs list --approve                       # Interactive approval (use 'f' to view files, 'd' to view diff, 'c' to view checks)`,
 	Run: func(cmd *cobra.Command, args []string) {
 		listPullRequests(args, "", false)
 	},
@@ -153,7 +186,7 @@ Examples:
   ghprs konflux --approve --show-files       # Approve with detailed file lists
   ghprs konflux --approve --show-diff        # Approve with detailed diff display
   ghprs konflux --approve --show-diff --no-color  # Approve with diff but no colors
-  ghprs konflux --approve                    # Interactive approval (use 'f' to view files, 'd' to view diff)
+  ghprs konflux --approve                    # Interactive approval (use 'f' to view files, 'd' to view diff, 'c' to view checks)
   ghprs konflux owner/repo --approve         # Approve Konflux PRs in specific repo`,
 	Run: func(cmd *cobra.Command, args []string) {
 		listPullRequests(args, "red-hat-konflux[bot]", true)
@@ -392,6 +425,11 @@ func promptForApproval(pr PullRequest, owner, repo string, client api.RESTClient
 		}
 	}
 
+	// Display check status
+	if pr.Head.SHA != "" {
+		displayCheckStatus(client, owner, repo, pr.Number, pr.Head.SHA)
+	}
+
 	// Optionally display diff if --show-diff is used
 	if showDiff {
 		err := displayDiff(owner, repo, pr.Number)
@@ -435,6 +473,12 @@ func promptForApproval(pr PullRequest, owner, repo string, client api.RESTClient
 		if !showDiff {
 			promptOptions = append(promptOptions, "d")
 			promptHelp = append(promptHelp, "d=show diff")
+		}
+
+		// Always show check option if we have a head SHA
+		if pr.Head.SHA != "" {
+			promptOptions = append(promptOptions, "c")
+			promptHelp = append(promptHelp, "c=show checks")
 		}
 
 		promptStr := fmt.Sprintf("\nApprove this PR? [%s]", strings.Join(promptOptions, "/"))
@@ -516,6 +560,14 @@ func promptForApproval(pr PullRequest, owner, repo string, client api.RESTClient
 			}
 			// Continue the loop to ask again
 			continue
+		case "c", "checks":
+			if pr.Head.SHA != "" {
+				displayDetailedCheckStatus(client, owner, repo, pr.Number, pr.Head.SHA)
+			} else {
+				fmt.Printf("   ❌ No commit SHA available for check status\n")
+			}
+			// Continue the loop to ask again
+			continue
 		case "", "n", "no":
 			fmt.Printf("Skipping PR #%d\n", pr.Number)
 			return ApprovalResultSkip
@@ -548,6 +600,7 @@ func approvePRsWithConfig(client api.RESTClient, owner, repo string, pullRequest
 	if !showDiff {
 		helpOptions = append(helpOptions, "[d]iff to view")
 	}
+	helpOptions = append(helpOptions, "[c]hecks to view")
 
 	fmt.Printf("Commands: %s\n", strings.Join(helpOptions, ", "))
 	fmt.Printf("═══════════════════════════════════════════════════════════════\n")
@@ -713,6 +766,192 @@ func hasMigrationWarning(pr PullRequest) bool {
 	}
 
 	return false
+}
+
+// getCheckStatus fetches and analyzes the status of all checks for a PR
+func getCheckStatus(client api.RESTClient, owner, repo string, prNumber int, headSHA string) (*CheckStatus, error) {
+	status := &CheckStatus{}
+
+	// Get check runs (newer GitHub checks API)
+	checkRunsPath := fmt.Sprintf("repos/%s/%s/commits/%s/check-runs", owner, repo, headSHA)
+	var checkRunsResp CheckRunsResponse
+	err := client.Get(checkRunsPath, &checkRunsResp)
+	if err != nil {
+		// If check runs API fails, we'll try the legacy status API below
+		fmt.Printf("   ⚠️  Could not fetch check runs: %v\n", err)
+	} else {
+		for _, checkRun := range checkRunsResp.CheckRuns {
+			status.Total++
+			switch checkRun.Status {
+			case "completed":
+				switch checkRun.Conclusion {
+				case "success":
+					status.Passed++
+				case "failure", "timed_out", "action_required":
+					status.Failed++
+				case "cancelled":
+					status.Cancelled++
+				case "skipped", "neutral":
+					status.Skipped++
+				}
+			case "queued", "in_progress":
+				status.Pending++
+			}
+		}
+	}
+
+	// Get legacy status checks
+	statusPath := fmt.Sprintf("repos/%s/%s/commits/%s/status", owner, repo, headSHA)
+	var statusResp struct {
+		State    string        `json:"state"`
+		Statuses []StatusCheck `json:"statuses"`
+	}
+	err = client.Get(statusPath, &statusResp)
+	if err != nil {
+		fmt.Printf("   ⚠️  Could not fetch status checks: %v\n", err)
+	} else {
+		for _, statusCheck := range statusResp.Statuses {
+			status.Total++
+			switch statusCheck.State {
+			case "success":
+				status.Passed++
+			case "failure", "error":
+				status.Failed++
+			case "pending":
+				status.Pending++
+			}
+		}
+	}
+
+	return status, nil
+}
+
+// displayCheckStatus shows the status of checks for a PR
+func displayCheckStatus(client api.RESTClient, owner, repo string, prNumber int, headSHA string) {
+	checkStatus, err := getCheckStatus(client, owner, repo, prNumber, headSHA)
+	if err != nil {
+		fmt.Printf("   ⚠️  Could not fetch check status: %v\n", err)
+		return
+	}
+
+	if checkStatus.Total == 0 {
+		fmt.Printf("   ✅ No checks configured\n")
+		return
+	}
+
+	// Build status summary
+	statusParts := []string{}
+	if checkStatus.Passed > 0 {
+		statusParts = append(statusParts, fmt.Sprintf("✅ %d passed", checkStatus.Passed))
+	}
+	if checkStatus.Failed > 0 {
+		statusParts = append(statusParts, fmt.Sprintf("❌ %d failed", checkStatus.Failed))
+	}
+	if checkStatus.Pending > 0 {
+		statusParts = append(statusParts, fmt.Sprintf("🟡 %d pending", checkStatus.Pending))
+	}
+	if checkStatus.Cancelled > 0 {
+		statusParts = append(statusParts, fmt.Sprintf("⚫ %d cancelled", checkStatus.Cancelled))
+	}
+	if checkStatus.Skipped > 0 {
+		statusParts = append(statusParts, fmt.Sprintf("⚪ %d skipped", checkStatus.Skipped))
+	}
+
+	// Show overall status with appropriate icon
+	var overallIcon string
+	if checkStatus.Failed > 0 {
+		overallIcon = "❌"
+	} else if checkStatus.Pending > 0 {
+		overallIcon = "🟡"
+	} else if checkStatus.Passed > 0 {
+		overallIcon = "✅"
+	} else {
+		overallIcon = "⚪"
+	}
+
+	fmt.Printf("   %s Checks (%d total): %s (press 'c' during approval to view details)\n", overallIcon, checkStatus.Total, strings.Join(statusParts, ", "))
+}
+
+// displayDetailedCheckStatus shows detailed information about all checks for a PR
+func displayDetailedCheckStatus(client api.RESTClient, owner, repo string, prNumber int, headSHA string) {
+	fmt.Printf("\n🔍 Detailed check status for PR #%d:\n", prNumber)
+
+	// Get check runs (newer GitHub checks API)
+	checkRunsPath := fmt.Sprintf("repos/%s/%s/commits/%s/check-runs", owner, repo, headSHA)
+	var checkRunsResp CheckRunsResponse
+	err := client.Get(checkRunsPath, &checkRunsResp)
+	if err == nil && len(checkRunsResp.CheckRuns) > 0 {
+		fmt.Printf("\n📋 Check Runs:\n")
+		for _, checkRun := range checkRunsResp.CheckRuns {
+			var icon string
+			var status string
+
+			switch checkRun.Status {
+			case "completed":
+				switch checkRun.Conclusion {
+				case "success":
+					icon = "✅"
+					status = "passed"
+				case "failure", "timed_out", "action_required":
+					icon = "❌"
+					status = fmt.Sprintf("failed (%s)", checkRun.Conclusion)
+				case "cancelled":
+					icon = "⚫"
+					status = "cancelled"
+				case "skipped", "neutral":
+					icon = "⚪"
+					status = fmt.Sprintf("skipped (%s)", checkRun.Conclusion)
+				default:
+					icon = "❓"
+					status = checkRun.Conclusion
+				}
+			case "queued":
+				icon = "🟡"
+				status = "queued"
+			case "in_progress":
+				icon = "🟡"
+				status = "running"
+			default:
+				icon = "❓"
+				status = checkRun.Status
+			}
+
+			fmt.Printf("   %s %s: %s\n", icon, checkRun.Name, status)
+		}
+	}
+
+	// Get legacy status checks
+	statusPath := fmt.Sprintf("repos/%s/%s/commits/%s/status", owner, repo, headSHA)
+	var statusResp struct {
+		State    string        `json:"state"`
+		Statuses []StatusCheck `json:"statuses"`
+	}
+	err = client.Get(statusPath, &statusResp)
+	if err == nil && len(statusResp.Statuses) > 0 {
+		fmt.Printf("\n📋 Status Checks:\n")
+		for _, statusCheck := range statusResp.Statuses {
+			var icon string
+			switch statusCheck.State {
+			case "success":
+				icon = "✅"
+			case "failure", "error":
+				icon = "❌"
+			case "pending":
+				icon = "🟡"
+			default:
+				icon = "❓"
+			}
+
+			description := statusCheck.Description
+			if description == "" {
+				description = statusCheck.State
+			}
+
+			fmt.Printf("   %s %s: %s\n", icon, statusCheck.Context, description)
+		}
+	}
+
+	fmt.Printf("\n")
 }
 
 // holdPR puts a PR on hold by commenting /hold and adding the "needs-ok-to-test" label
