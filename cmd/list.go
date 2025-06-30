@@ -1751,8 +1751,8 @@ func displayLegend(isKonflux bool) {
 	fmt.Println("Legend:")
 	fmt.Println("  Status: 🟢 open  🟡 draft  🔶 on hold  🔴 closed  🟣 merged")
 	fmt.Println("  Reviewed: ✅ approved  ❌ not approved")
-	fmt.Println("  Rebase: 🔄 needs rebase  (empty = up to date)")
-	fmt.Println("  Blocked: 🚫 blocked from merging  (empty = not blocked)")
+	fmt.Println("  Rebase: 🔄 needs rebase  - N/A (on hold)  (empty = up to date)")
+	fmt.Println("  Blocked: 🚫 blocked from merging  - N/A (on hold)  (empty = not blocked)")
 	if isKonflux {
 		fmt.Println("  Tekton: ✅ exclusively Tekton files  ❌ mixed/other files")
 		fmt.Println("  🚨 = migration warning")
@@ -1888,16 +1888,20 @@ func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.
 			reviewedStatus = "❌"
 		}
 
-		// Determine rebase status
+		// Determine rebase status - skip API call if PR is on hold
 		rebaseStatus := ""
-		if needsRebaseWithCache(cache, *client, owner, repo, pr) {
+		if isOnHold(pr) {
+			rebaseStatus = "-" // N/A for PRs on hold
+		} else if needsRebaseWithCache(cache, *client, owner, repo, pr) {
 			rebaseStatus = "🔄"
 		}
 		// Leave empty if no rebase needed
 
-		// Determine blocked status
+		// Determine blocked status - skip API call if PR is on hold
 		blockedStatus := ""
-		if isBlockedWithCache(cache, *client, owner, repo, pr) {
+		if isOnHold(pr) {
+			blockedStatus = "-" // N/A for PRs on hold
+		} else if isBlockedWithCache(cache, *client, owner, repo, pr) {
 			blockedStatus = "🚫"
 		}
 		// Leave empty if not blocked
@@ -2057,16 +2061,20 @@ func displayPRTableWithCache(pullRequests []PullRequest, owner, repo string, cli
 			reviewedStatus = "❌"
 		}
 
-		// Determine rebase status - use existing cache
+		// Determine rebase status - skip API call if PR is on hold
 		rebaseStatus := ""
-		if needsRebaseWithCache(cache, *client, owner, repo, pr) {
+		if isOnHold(pr) {
+			rebaseStatus = "-" // N/A for PRs on hold
+		} else if needsRebaseWithCache(cache, *client, owner, repo, pr) {
 			rebaseStatus = "🔄"
 		}
 		// Leave empty if no rebase needed
 
-		// Determine blocked status - use existing cache
+		// Determine blocked status - skip API call if PR is on hold
 		blockedStatus := ""
-		if isBlockedWithCache(cache, *client, owner, repo, pr) {
+		if isOnHold(pr) {
+			blockedStatus = "-" // N/A for PRs on hold
+		} else if isBlockedWithCache(cache, *client, owner, repo, pr) {
 			blockedStatus = "🚫"
 		}
 		// Leave empty if not blocked
