@@ -399,12 +399,13 @@ func listPullRequests(args []string, authorFilter string, isKonflux bool) {
 				}
 			}
 
-			approvePRsWithConfig(*client, owner, repo, pullRequests, config)
+			// Start approval flow - table will be displayed there
+			approvePRsWithConfig(*client, owner, repo, pullRequests, config, nil)
 			continue
 		}
 
 		// Display PR list in table format
-		displayPRTable(pullRequests, owner, repo, client, isKonflux)
+		_ = displayPRTable(pullRequests, owner, repo, client, isKonflux, nil)
 	}
 }
 
@@ -420,25 +421,29 @@ const (
 	ApprovalResultComment
 )
 
-func promptForApproval(pr PullRequest, owner, repo string, client api.RESTClient, config ApprovalConfig) ApprovalResult {
+// promptForApprovalWithCache prompts the user to approve a specific PR with configurable behavior and optional cache
+func promptForApprovalWithCache(pr PullRequest, owner, repo string, client api.RESTClient, config ApprovalConfig, cache *PRDetailsCache) ApprovalResult {
 	fmt.Printf("\n🔍 Review PR %s:\n", formatPRLink(owner, repo, pr.Number))
 	fmt.Printf("   Title: %s\n", pr.Title)
 	fmt.Printf("   Author: @%s\n", pr.User.Login)
 	fmt.Printf("   Branch: %s → %s\n", pr.Head.Ref, pr.Base.Ref)
 
-	// Show rebase status
-	if needsRebase(pr) {
-		fmt.Printf("   🔄 Rebase needed: PR is behind the target branch or has conflicts\n")
-	} else {
-		fmt.Printf("   ✅ Up to date: No rebase needed\n")
+	// Use provided cache or create a new one for PR details to avoid duplicate API calls
+	if cache == nil {
+		cache = NewPRDetailsCache()
 	}
 
-	// Show blocked status
-	if isBlocked(pr) {
-		fmt.Printf("   🚫 Blocked: PR is blocked from merging (failed checks, missing reviews, etc.)\n")
-	} else {
-		fmt.Printf("   ✅ Not blocked: PR can be merged when ready\n")
+	// Show rebase status - fetch full details if needed
+	if needsRebaseWithCache(cache, client, owner, repo, pr) {
+		fmt.Printf("   🔄 Rebase needed: PR is behind the target branch or has conflicts\n")
 	}
+	// Only show if there's an issue, otherwise it's assumed to be up to date
+
+	// Show blocked status - fetch full details if needed
+	if isBlockedWithCache(cache, client, owner, repo, pr) {
+		fmt.Printf("   🚫 Blocked: PR is blocked from merging (failed checks, missing reviews, etc.)\n")
+	}
+	// Only show if blocked, otherwise it's assumed to be ready for merge
 
 	// Get file count (and optionally display files if --show-files is used)
 	filesPath := fmt.Sprintf("repos/%s/%s/pulls/%d/files", owner, repo, pr.Number)
@@ -633,12 +638,8 @@ func promptForApproval(pr PullRequest, owner, repo string, client api.RESTClient
 	}
 }
 
-func approvePRsWithConfig(client api.RESTClient, owner, repo string, pullRequests []PullRequest, config ApprovalConfig) {
-	prType := "PRs"
-	if config.IsKonflux {
-		prType = "Konflux PRs"
-	}
-	fmt.Printf("\n🎯 Interactive approval mode for %d %s\n", len(pullRequests), prType)
+func approvePRsWithConfig(client api.RESTClient, owner, repo string, pullRequests []PullRequest, config ApprovalConfig, cache *PRDetailsCache) {
+	fmt.Printf("\n🎯 Interactive approval mode for %d PRs\n", len(pullRequests))
 
 	// Keep track of processed PRs to remove them from subsequent displays
 	processedPRs := make(map[int]bool)
@@ -677,7 +678,7 @@ func approvePRsWithConfig(client api.RESTClient, owner, repo string, pullRequest
 
 		// Display the PR table (excluding processed PRs)
 		fmt.Printf("═══════════════════════════════════════════════════════════════\n")
-		displayPRTable(displayPRs, owner, repo, &client, config.IsKonflux)
+		cache = displayPRTable(displayPRs, owner, repo, &client, config.IsKonflux, cache)
 		fmt.Printf("═══════════════════════════════════════════════════════════════\n")
 
 		// Check if we have any approvable PRs left
@@ -750,9 +751,9 @@ func approvePRsWithConfig(client api.RESTClient, owner, repo string, pullRequest
 			fmt.Printf("Selected PR: #%d\n", selectedPR.Number)
 		}
 
-		// Now proceed with the approval flow for the selected PR
+		// Now proceed with the approval flow for the selected PR - reuse the cache
 		fmt.Printf("═══════════════════════════════════════════════════════════════\n")
-		result := approveSinglePR(client, owner, repo, *selectedPR, config)
+		result := approveSinglePRWithCache(client, owner, repo, *selectedPR, config, cache)
 
 		// Mark this PR as processed and update counters
 		processedPRs[selectedPR.Number] = true
@@ -784,8 +785,8 @@ exitLoop:
 	fmt.Printf("   📊 Total processed: %d\n", approvedCount+skippedCount+heldCount+commentedCount)
 }
 
-// approveSinglePR handles the approval process for a single PR
-func approveSinglePR(client api.RESTClient, owner, repo string, pr PullRequest, config ApprovalConfig) ApprovalResult {
+// approveSinglePRWithCache handles the approval process for a single PR with cache reuse
+func approveSinglePRWithCache(client api.RESTClient, owner, repo string, pr PullRequest, config ApprovalConfig, cache *PRDetailsCache) ApprovalResult {
 	// Build help message based on what's already shown
 	helpOptions := []string{"[y]es to approve", "[N]o to skip (default)", "[h]old", "[q]uit"}
 	if !showFiles {
@@ -829,8 +830,8 @@ func approveSinglePR(client api.RESTClient, owner, repo string, pr PullRequest, 
 		}
 	}
 
-	// Prompt user for approval decision
-	result := promptForApproval(pr, owner, repo, client, config)
+	// Prompt user for approval decision - reuse the provided cache
+	result := promptForApprovalWithCache(pr, owner, repo, client, config, cache)
 	switch result {
 	case ApprovalResultSkip:
 		fmt.Printf("❌ Skipped PR %s\n", formatPRLink(owner, repo, pr.Number))
@@ -897,6 +898,68 @@ func needsRebase(pr PullRequest) bool {
 // isBlocked checks if a PR is blocked from merging based on mergeable_state
 func isBlocked(pr PullRequest) bool {
 	return pr.MergeableState == "blocked"
+}
+
+// PRDetailsCache caches fetched PR details to avoid duplicate API calls
+type PRDetailsCache struct {
+	cache map[int]*PullRequest
+}
+
+// NewPRDetailsCache creates a new PR details cache
+func NewPRDetailsCache() *PRDetailsCache {
+	return &PRDetailsCache{
+		cache: make(map[int]*PullRequest),
+	}
+}
+
+// GetOrFetch gets PR details from cache or fetches them if not cached
+func (c *PRDetailsCache) GetOrFetch(client api.RESTClient, owner, repo string, prNumber int, originalPR PullRequest) *PullRequest {
+	// If the original PR already has mergeable_state populated, use it
+	if originalPR.MergeableState != "" {
+		return &originalPR
+	}
+
+	// Check cache first
+	if cachedPR, exists := c.cache[prNumber]; exists {
+		return cachedPR
+	}
+
+	// Fetch from API and cache the result
+	var pr PullRequest
+	prPath := fmt.Sprintf("repos/%s/%s/pulls/%d", owner, repo, prNumber)
+	err := client.Get(prPath, &pr)
+	if err != nil {
+		// If we can't fetch details, cache the original PR to avoid retrying
+		c.cache[prNumber] = &originalPR
+		return &originalPR
+	}
+
+	// Cache the fetched PR details
+	c.cache[prNumber] = &pr
+	return &pr
+}
+
+// fetchPRDetails fetches full PR details including mergeable_state
+func fetchPRDetails(client api.RESTClient, owner, repo string, prNumber int) (*PullRequest, error) {
+	var pr PullRequest
+	prPath := fmt.Sprintf("repos/%s/%s/pulls/%d", owner, repo, prNumber)
+	err := client.Get(prPath, &pr)
+	if err != nil {
+		return nil, err
+	}
+	return &pr, nil
+}
+
+// needsRebaseWithCache checks if a PR needs a rebase using cached details
+func needsRebaseWithCache(cache *PRDetailsCache, client api.RESTClient, owner, repo string, pr PullRequest) bool {
+	fullPR := cache.GetOrFetch(client, owner, repo, pr.Number, pr)
+	return needsRebase(*fullPR)
+}
+
+// isBlockedWithCache checks if a PR is blocked using cached details
+func isBlockedWithCache(cache *PRDetailsCache, client api.RESTClient, owner, repo string, pr PullRequest) bool {
+	fullPR := cache.GetOrFetch(client, owner, repo, pr.Number, pr)
+	return isBlocked(*fullPR)
 }
 
 // isReviewed checks if a PR has any approved reviews
@@ -1686,8 +1749,8 @@ func displayLegend(isKonflux bool) {
 	fmt.Println("Legend:")
 	fmt.Println("  Status: 🟢 open  🟡 draft  🔶 on hold  🔴 closed  🟣 merged")
 	fmt.Println("  Reviewed: ✅ approved  ❌ not approved")
-	fmt.Println("  Rebase: ✅ up to date  🔄 needs rebase")
-	fmt.Println("  Blocked: ✅ not blocked  🚫 blocked from merging")
+	fmt.Println("  Rebase: 🔄 needs rebase  - N/A (on hold)  (empty = up to date)")
+	fmt.Println("  Blocked: 🚫 blocked from merging  - N/A (on hold)  (empty = not blocked)")
 	if isKonflux {
 		fmt.Println("  Tekton: ✅ exclusively Tekton files  ❌ mixed/other files")
 		fmt.Println("  🚨 = migration warning")
@@ -1695,10 +1758,15 @@ func displayLegend(isKonflux bool) {
 	fmt.Println()
 }
 
-// displayPRTable displays PRs in a table format
-func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.RESTClient, isKonflux bool) {
+// displayPRTableWithCache displays PRs in a table format using an optional existing cache
+func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.RESTClient, isKonflux bool, cache *PRDetailsCache) *PRDetailsCache {
+	// Use existing cache or create a new one
+	if cache == nil {
+		cache = NewPRDetailsCache()
+	}
+
 	if len(pullRequests) == 0 {
-		return
+		return cache
 	}
 
 	// Display legend first
@@ -1820,21 +1888,23 @@ func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.
 			reviewedStatus = "❌"
 		}
 
-		// Determine rebase status
+		// Determine rebase status - skip API call if PR is on hold
 		rebaseStatus := ""
-		if needsRebase(pr) {
+		if isOnHold(pr) {
+			rebaseStatus = "-" // N/A for PRs on hold
+		} else if needsRebaseWithCache(cache, *client, owner, repo, pr) {
 			rebaseStatus = "🔄"
-		} else {
-			rebaseStatus = "✅"
 		}
+		// Leave empty if no rebase needed
 
-		// Determine blocked status
+		// Determine blocked status - skip API call if PR is on hold
 		blockedStatus := ""
-		if isBlocked(pr) {
+		if isOnHold(pr) {
+			blockedStatus = "-" // N/A for PRs on hold
+		} else if isBlockedWithCache(cache, *client, owner, repo, pr) {
 			blockedStatus = "🚫"
-		} else {
-			blockedStatus = "✅"
 		}
+		// Leave empty if not blocked
 
 		// Print the row with proper padding
 		fmt.Printf("%s %s %s %s %s %s %s %s %s %s",
@@ -1861,6 +1931,9 @@ func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.
 
 		fmt.Printf("\n")
 	}
+
+	// Return the cache for potential reuse in approval flow
+	return cache
 }
 
 func init() {

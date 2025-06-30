@@ -1,5 +1,7 @@
 package cmd
 
+import "github.com/cli/go-gh/v2/pkg/api"
+
 // Test helper functions that expose internal functionality for testing
 
 // Exported utility functions for testing
@@ -45,6 +47,18 @@ func NeedsRebaseTest(pr PullRequest) bool {
 
 func IsBlockedTest(pr PullRequest) bool {
 	return isBlocked(pr)
+}
+
+func FetchPRDetailsTest(client api.RESTClient, owner, repo string, prNumber int) (*PullRequest, error) {
+	return fetchPRDetails(client, owner, repo, prNumber)
+}
+
+func NewPRDetailsCacheTest() *PRDetailsCache {
+	return NewPRDetailsCache()
+}
+
+func (c *PRDetailsCache) GetOrFetchTest(client api.RESTClient, owner, repo string, prNumber int, originalPR PullRequest) *PullRequest {
+	return c.GetOrFetch(client, owner, repo, prNumber, originalPR)
 }
 
 func ColorizeGitDiffTest(diff string) string {
