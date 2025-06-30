@@ -598,4 +598,23 @@ var _ = Describe("Edge Cases and Complex Scenarios", func() {
 			Expect(len(stripped)).To(BeNumerically(">=", 0))
 		})
 	})
+
+	Describe("PR Details Caching", func() {
+		It("should create a new cache", func() {
+			cache := cmd.NewPRDetailsCacheTest()
+			Expect(cache).NotTo(BeNil())
+		})
+
+		It("should handle cache creation and basic operations", func() {
+			cache := cmd.NewPRDetailsCacheTest()
+			Expect(cache).NotTo(BeNil())
+
+			// Test that we can create multiple caches
+			cache2 := cmd.NewPRDetailsCacheTest()
+			Expect(cache2).NotTo(BeNil())
+
+			// Test that caches are different instances (different memory addresses)
+			Expect(fmt.Sprintf("%p", cache)).NotTo(Equal(fmt.Sprintf("%p", cache2)))
+		})
+	})
 })

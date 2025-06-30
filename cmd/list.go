@@ -399,12 +399,14 @@ func listPullRequests(args []string, authorFilter string, isKonflux bool) {
 				}
 			}
 
-			approvePRsWithConfig(*client, owner, repo, pullRequests, config)
+			// Create a cache and populate it during table display, then use it for approval
+			cache := displayPRTable(pullRequests, owner, repo, client, isKonflux)
+			approvePRsWithConfigAndCache(*client, owner, repo, pullRequests, config, cache)
 			continue
 		}
 
 		// Display PR list in table format
-		displayPRTable(pullRequests, owner, repo, client, isKonflux)
+		_ = displayPRTable(pullRequests, owner, repo, client, isKonflux)
 	}
 }
 
@@ -420,25 +422,29 @@ const (
 	ApprovalResultComment
 )
 
-func promptForApproval(pr PullRequest, owner, repo string, client api.RESTClient, config ApprovalConfig) ApprovalResult {
+// promptForApprovalWithCache prompts the user to approve a specific PR with configurable behavior and optional cache
+func promptForApprovalWithCache(pr PullRequest, owner, repo string, client api.RESTClient, config ApprovalConfig, cache *PRDetailsCache) ApprovalResult {
 	fmt.Printf("\n🔍 Review PR %s:\n", formatPRLink(owner, repo, pr.Number))
 	fmt.Printf("   Title: %s\n", pr.Title)
 	fmt.Printf("   Author: @%s\n", pr.User.Login)
 	fmt.Printf("   Branch: %s → %s\n", pr.Head.Ref, pr.Base.Ref)
 
-	// Show rebase status
-	if needsRebase(pr) {
-		fmt.Printf("   🔄 Rebase needed: PR is behind the target branch or has conflicts\n")
-	} else {
-		fmt.Printf("   ✅ Up to date: No rebase needed\n")
+	// Use provided cache or create a new one for PR details to avoid duplicate API calls
+	if cache == nil {
+		cache = NewPRDetailsCache()
 	}
 
-	// Show blocked status
-	if isBlocked(pr) {
-		fmt.Printf("   🚫 Blocked: PR is blocked from merging (failed checks, missing reviews, etc.)\n")
-	} else {
-		fmt.Printf("   ✅ Not blocked: PR can be merged when ready\n")
+	// Show rebase status - fetch full details if needed
+	if needsRebaseWithCache(cache, client, owner, repo, pr) {
+		fmt.Printf("   🔄 Rebase needed: PR is behind the target branch or has conflicts\n")
 	}
+	// Only show if there's an issue, otherwise it's assumed to be up to date
+
+	// Show blocked status - fetch full details if needed
+	if isBlockedWithCache(cache, client, owner, repo, pr) {
+		fmt.Printf("   🚫 Blocked: PR is blocked from merging (failed checks, missing reviews, etc.)\n")
+	}
+	// Only show if blocked, otherwise it's assumed to be ready for merge
 
 	// Get file count (and optionally display files if --show-files is used)
 	filesPath := fmt.Sprintf("repos/%s/%s/pulls/%d/files", owner, repo, pr.Number)
@@ -633,12 +639,9 @@ func promptForApproval(pr PullRequest, owner, repo string, client api.RESTClient
 	}
 }
 
-func approvePRsWithConfig(client api.RESTClient, owner, repo string, pullRequests []PullRequest, config ApprovalConfig) {
-	prType := "PRs"
-	if config.IsKonflux {
-		prType = "Konflux PRs"
-	}
-	fmt.Printf("\n🎯 Interactive approval mode for %d %s\n", len(pullRequests), prType)
+// approvePRsWithConfigAndCache is like approvePRsWithConfig but reuses an existing cache
+func approvePRsWithConfigAndCache(client api.RESTClient, owner, repo string, pullRequests []PullRequest, config ApprovalConfig, cache *PRDetailsCache) {
+	fmt.Printf("\n🎯 Interactive approval mode for %d PRs\n", len(pullRequests))
 
 	// Keep track of processed PRs to remove them from subsequent displays
 	processedPRs := make(map[int]bool)
@@ -675,9 +678,9 @@ func approvePRsWithConfig(client api.RESTClient, owner, repo string, pullRequest
 			break
 		}
 
-		// Display the PR table (excluding processed PRs)
+		// Display the PR table (excluding processed PRs) - reuse the cache
 		fmt.Printf("═══════════════════════════════════════════════════════════════\n")
-		displayPRTable(displayPRs, owner, repo, &client, config.IsKonflux)
+		displayPRTableWithCache(displayPRs, owner, repo, &client, config.IsKonflux, cache)
 		fmt.Printf("═══════════════════════════════════════════════════════════════\n")
 
 		// Check if we have any approvable PRs left
@@ -750,9 +753,9 @@ func approvePRsWithConfig(client api.RESTClient, owner, repo string, pullRequest
 			fmt.Printf("Selected PR: #%d\n", selectedPR.Number)
 		}
 
-		// Now proceed with the approval flow for the selected PR
+		// Now proceed with the approval flow for the selected PR - reuse the cache
 		fmt.Printf("═══════════════════════════════════════════════════════════════\n")
-		result := approveSinglePR(client, owner, repo, *selectedPR, config)
+		result := approveSinglePRWithCache(client, owner, repo, *selectedPR, config, cache)
 
 		// Mark this PR as processed and update counters
 		processedPRs[selectedPR.Number] = true
@@ -784,8 +787,8 @@ exitLoop:
 	fmt.Printf("   📊 Total processed: %d\n", approvedCount+skippedCount+heldCount+commentedCount)
 }
 
-// approveSinglePR handles the approval process for a single PR
-func approveSinglePR(client api.RESTClient, owner, repo string, pr PullRequest, config ApprovalConfig) ApprovalResult {
+// approveSinglePRWithCache handles the approval process for a single PR with cache reuse
+func approveSinglePRWithCache(client api.RESTClient, owner, repo string, pr PullRequest, config ApprovalConfig, cache *PRDetailsCache) ApprovalResult {
 	// Build help message based on what's already shown
 	helpOptions := []string{"[y]es to approve", "[N]o to skip (default)", "[h]old", "[q]uit"}
 	if !showFiles {
@@ -829,8 +832,8 @@ func approveSinglePR(client api.RESTClient, owner, repo string, pr PullRequest, 
 		}
 	}
 
-	// Prompt user for approval decision
-	result := promptForApproval(pr, owner, repo, client, config)
+	// Prompt user for approval decision - reuse the provided cache
+	result := promptForApprovalWithCache(pr, owner, repo, client, config, cache)
 	switch result {
 	case ApprovalResultSkip:
 		fmt.Printf("❌ Skipped PR %s\n", formatPRLink(owner, repo, pr.Number))
@@ -897,6 +900,68 @@ func needsRebase(pr PullRequest) bool {
 // isBlocked checks if a PR is blocked from merging based on mergeable_state
 func isBlocked(pr PullRequest) bool {
 	return pr.MergeableState == "blocked"
+}
+
+// PRDetailsCache caches fetched PR details to avoid duplicate API calls
+type PRDetailsCache struct {
+	cache map[int]*PullRequest
+}
+
+// NewPRDetailsCache creates a new PR details cache
+func NewPRDetailsCache() *PRDetailsCache {
+	return &PRDetailsCache{
+		cache: make(map[int]*PullRequest),
+	}
+}
+
+// GetOrFetch gets PR details from cache or fetches them if not cached
+func (c *PRDetailsCache) GetOrFetch(client api.RESTClient, owner, repo string, prNumber int, originalPR PullRequest) *PullRequest {
+	// If the original PR already has mergeable_state populated, use it
+	if originalPR.MergeableState != "" {
+		return &originalPR
+	}
+
+	// Check cache first
+	if cachedPR, exists := c.cache[prNumber]; exists {
+		return cachedPR
+	}
+
+	// Fetch from API and cache the result
+	var pr PullRequest
+	prPath := fmt.Sprintf("repos/%s/%s/pulls/%d", owner, repo, prNumber)
+	err := client.Get(prPath, &pr)
+	if err != nil {
+		// If we can't fetch details, cache the original PR to avoid retrying
+		c.cache[prNumber] = &originalPR
+		return &originalPR
+	}
+
+	// Cache the fetched PR details
+	c.cache[prNumber] = &pr
+	return &pr
+}
+
+// fetchPRDetails fetches full PR details including mergeable_state
+func fetchPRDetails(client api.RESTClient, owner, repo string, prNumber int) (*PullRequest, error) {
+	var pr PullRequest
+	prPath := fmt.Sprintf("repos/%s/%s/pulls/%d", owner, repo, prNumber)
+	err := client.Get(prPath, &pr)
+	if err != nil {
+		return nil, err
+	}
+	return &pr, nil
+}
+
+// needsRebaseWithCache checks if a PR needs a rebase using cached details
+func needsRebaseWithCache(cache *PRDetailsCache, client api.RESTClient, owner, repo string, pr PullRequest) bool {
+	fullPR := cache.GetOrFetch(client, owner, repo, pr.Number, pr)
+	return needsRebase(*fullPR)
+}
+
+// isBlockedWithCache checks if a PR is blocked using cached details
+func isBlockedWithCache(cache *PRDetailsCache, client api.RESTClient, owner, repo string, pr PullRequest) bool {
+	fullPR := cache.GetOrFetch(client, owner, repo, pr.Number, pr)
+	return isBlocked(*fullPR)
 }
 
 // isReviewed checks if a PR has any approved reviews
@@ -1686,8 +1751,8 @@ func displayLegend(isKonflux bool) {
 	fmt.Println("Legend:")
 	fmt.Println("  Status: 🟢 open  🟡 draft  🔶 on hold  🔴 closed  🟣 merged")
 	fmt.Println("  Reviewed: ✅ approved  ❌ not approved")
-	fmt.Println("  Rebase: ✅ up to date  🔄 needs rebase")
-	fmt.Println("  Blocked: ✅ not blocked  🚫 blocked from merging")
+	fmt.Println("  Rebase: 🔄 needs rebase  (empty = up to date)")
+	fmt.Println("  Blocked: 🚫 blocked from merging  (empty = not blocked)")
 	if isKonflux {
 		fmt.Println("  Tekton: ✅ exclusively Tekton files  ❌ mixed/other files")
 		fmt.Println("  🚨 = migration warning")
@@ -1695,10 +1760,10 @@ func displayLegend(isKonflux bool) {
 	fmt.Println()
 }
 
-// displayPRTable displays PRs in a table format
-func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.RESTClient, isKonflux bool) {
+// displayPRTable displays PRs in a table format and returns the cache for reuse
+func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.RESTClient, isKonflux bool) *PRDetailsCache {
 	if len(pullRequests) == 0 {
-		return
+		return NewPRDetailsCache() // Return empty cache
 	}
 
 	// Display legend first
@@ -1752,6 +1817,9 @@ func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.
 		fmt.Printf(" %s", PadString(strings.Repeat("-", tektonWidth), tektonWidth))
 	}
 	fmt.Printf("\n")
+
+	// Create a cache for PR details to avoid duplicate API calls
+	cache := NewPRDetailsCache()
 
 	// Display each PR as a table row
 	for _, pr := range pullRequests {
@@ -1822,19 +1890,186 @@ func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.
 
 		// Determine rebase status
 		rebaseStatus := ""
-		if needsRebase(pr) {
+		if needsRebaseWithCache(cache, *client, owner, repo, pr) {
 			rebaseStatus = "🔄"
-		} else {
-			rebaseStatus = "✅"
 		}
+		// Leave empty if no rebase needed
 
 		// Determine blocked status
 		blockedStatus := ""
-		if isBlocked(pr) {
+		if isBlockedWithCache(cache, *client, owner, repo, pr) {
 			blockedStatus = "🚫"
-		} else {
-			blockedStatus = "✅"
 		}
+		// Leave empty if not blocked
+
+		// Print the row with proper padding
+		fmt.Printf("%s %s %s %s %s %s %s %s %s %s",
+			PadString(icon, statusWidth),
+			PadString(prLink, prWidth),
+			PadString(title, titleWidth),
+			PadString(author, authorWidth),
+			PadString(branch, branchWidth),
+			PadString(target, targetWidth),
+			PadString(status, stateWidth),
+			PadString(reviewedStatus, reviewedWidth),
+			PadString(rebaseStatus, rebaseWidth),
+			PadString(blockedStatus, blockedWidth))
+
+		if isKonflux {
+			tektonStatus := ""
+			if onlyTektonFiles {
+				tektonStatus = "✅"
+			} else {
+				tektonStatus = "❌"
+			}
+			fmt.Printf(" %s", PadString(tektonStatus, tektonWidth))
+		}
+
+		fmt.Printf("\n")
+	}
+
+	// Return the cache for potential reuse in approval flow
+	return cache
+}
+
+// displayPRTableWithCache displays PRs in a table format using an existing cache
+func displayPRTableWithCache(pullRequests []PullRequest, owner, repo string, client *api.RESTClient, isKonflux bool, cache *PRDetailsCache) {
+	if len(pullRequests) == 0 {
+		return
+	}
+
+	// Display legend first
+	displayLegend(isKonflux)
+
+	// Define column widths - compact but readable
+	const (
+		statusWidth   = 2  // Emoji width
+		prWidth       = 6  // "#1234"
+		titleWidth    = 41 // Shorter titles (reduced to fit blocked column)
+		authorWidth   = 16 // Author names (reduced to fit blocked column)
+		branchWidth   = 14 // Source branch names
+		targetWidth   = 12 // Target branch names
+		stateWidth    = 10 // "STATUS"
+		reviewedWidth = 8  // "REVIEWED"
+		rebaseWidth   = 6  // "REBASE"
+		blockedWidth  = 7  // "BLOCKED"
+		tektonWidth   = 6  // "TEKTON"
+	)
+
+	// Print table header
+	fmt.Printf("%s %s %s %s %s %s %s %s %s %s",
+		PadString("ST", statusWidth),
+		PadString("PR", prWidth),
+		PadString("TITLE", titleWidth),
+		PadString("AUTHOR", authorWidth),
+		PadString("BRANCH", branchWidth),
+		PadString("TARGET", targetWidth),
+		PadString("STATUS", stateWidth),
+		PadString("REVIEWED", reviewedWidth),
+		PadString("REBASE", rebaseWidth),
+		PadString("BLOCKED", blockedWidth))
+	if isKonflux {
+		fmt.Printf(" %s", PadString("TEKTON", tektonWidth))
+	}
+	fmt.Printf("\n")
+
+	// Print separator line
+	fmt.Printf("%s %s %s %s %s %s %s %s %s %s",
+		PadString(strings.Repeat("-", statusWidth), statusWidth),
+		PadString(strings.Repeat("-", prWidth), prWidth),
+		PadString(strings.Repeat("-", titleWidth), titleWidth),
+		PadString(strings.Repeat("-", authorWidth), authorWidth),
+		PadString(strings.Repeat("-", branchWidth), branchWidth),
+		PadString(strings.Repeat("-", targetWidth), targetWidth),
+		PadString(strings.Repeat("-", stateWidth), stateWidth),
+		PadString(strings.Repeat("-", reviewedWidth), reviewedWidth),
+		PadString(strings.Repeat("-", rebaseWidth), rebaseWidth),
+		PadString(strings.Repeat("-", blockedWidth), blockedWidth))
+	if isKonflux {
+		fmt.Printf(" %s", PadString(strings.Repeat("-", tektonWidth), tektonWidth))
+	}
+	fmt.Printf("\n")
+
+	// Display each PR as a table row - reuse existing cache
+	for _, pr := range pullRequests {
+		// Check for Tekton files if this is a Konflux PR
+		onlyTektonFiles := false
+		if isKonflux {
+			var err error
+			onlyTektonFiles, _, err = checkTektonFilesDetailed(*client, owner, repo, pr.Number)
+			if err != nil {
+				// Silently continue if we can't check Tekton files for table display
+				// Error is intentionally ignored for display purposes
+				_ = err
+			}
+		}
+
+		// Check for migration warnings
+		hasMigration := false
+		if isKonflux {
+			hasMigration = hasMigrationWarning(pr)
+		}
+
+		// Skip PRs that don't exclusively modify Tekton files if --tekton-only flag is set
+		if tektonOnly && !onlyTektonFiles {
+			continue
+		}
+
+		// Skip PRs that don't have migration warnings if --migration-only flag is set
+		if migrationOnly && !hasMigration {
+			continue
+		}
+
+		// Get status icon
+		var icon string
+		if isKonflux {
+			icon = getStatusIconWithTekton(pr, onlyTektonFiles)
+		} else {
+			icon = getStatusIcon(pr)
+		}
+
+		// Prepare table data
+		prLink := formatPRLink(owner, repo, pr.Number)
+		title := TruncateString(pr.Title, titleWidth)
+		author := TruncateString(pr.User.Login, authorWidth)
+		branch := TruncateString(pr.Head.Ref, branchWidth)
+		target := TruncateString(pr.Base.Ref, targetWidth)
+
+		// Determine status text
+		status := ""
+		if pr.Draft {
+			status = "draft"
+		} else if isOnHold(pr) {
+			status = "on hold"
+		} else {
+			status = pr.State
+		}
+		if hasMigration {
+			status += " 🚨"
+		}
+		status = TruncateString(status, stateWidth)
+
+		// Determine reviewed status
+		reviewedStatus := ""
+		if isReviewed(*client, owner, repo, pr.Number) {
+			reviewedStatus = "✅"
+		} else {
+			reviewedStatus = "❌"
+		}
+
+		// Determine rebase status - use existing cache
+		rebaseStatus := ""
+		if needsRebaseWithCache(cache, *client, owner, repo, pr) {
+			rebaseStatus = "🔄"
+		}
+		// Leave empty if no rebase needed
+
+		// Determine blocked status - use existing cache
+		blockedStatus := ""
+		if isBlockedWithCache(cache, *client, owner, repo, pr) {
+			blockedStatus = "🚫"
+		}
+		// Leave empty if not blocked
 
 		// Print the row with proper padding
 		fmt.Printf("%s %s %s %s %s %s %s %s %s %s",
