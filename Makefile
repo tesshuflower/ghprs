@@ -22,6 +22,15 @@ clean:
 test:
 	go test ./...
 
+# Run tests with Ginkgo
+test-ginkgo:
+	~/go/bin/ginkgo -r
+
+# Run tests with coverage
+test-coverage:
+	go test -coverprofile=coverage.out ./...
+	go tool cover -html=coverage.out -o coverage.html
+
 # Build and run (use: make run ARGS="--help")
 run: build
 	./bin/ghprs $(ARGS)

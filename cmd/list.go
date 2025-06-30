@@ -1359,8 +1359,8 @@ func formatPRLink(owner, repo string, prNumber int) string {
 }
 
 // truncateString truncates a string to a maximum display width with ellipsis
-func truncateString(s string, maxWidth int) string {
-	if displayWidth(s) <= maxWidth {
+func TruncateString(s string, maxWidth int) string {
+	if DisplayWidth(s) <= maxWidth {
 		return s
 	}
 	if maxWidth <= 3 {
@@ -1398,9 +1398,9 @@ func truncateString(s string, maxWidth int) string {
 }
 
 // displayWidth calculates the visual width of a string in the terminal
-func displayWidth(s string) int {
+func DisplayWidth(s string) int {
 	// Remove ANSI escape sequences (including OSC 8 sequences for links)
-	cleanString := stripANSISequences(s)
+	cleanString := StripANSISequences(s)
 
 	width := 0
 	for _, r := range cleanString {
@@ -1424,7 +1424,7 @@ func displayWidth(s string) int {
 }
 
 // stripANSISequences removes ANSI escape sequences from a string
-func stripANSISequences(s string) string {
+func StripANSISequences(s string) string {
 	result := strings.Builder{}
 	i := 0
 	runes := []rune(s)
@@ -1476,8 +1476,8 @@ func stripANSISequences(s string) string {
 }
 
 // padString pads a string to a specific width, accounting for actual display width
-func padString(s string, width int) string {
-	currentWidth := displayWidth(s)
+func PadString(s string, width int) string {
+	currentWidth := DisplayWidth(s)
 	if currentWidth >= width {
 		return s
 	}
@@ -1521,31 +1521,31 @@ func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.
 
 	// Print table header
 	fmt.Printf("%s %s %s %s %s %s %s %s",
-		padString("ST", statusWidth),
-		padString("PR", prWidth),
-		padString("TITLE", titleWidth),
-		padString("AUTHOR", authorWidth),
-		padString("BRANCH", branchWidth),
-		padString("TARGET", targetWidth),
-		padString("STATUS", stateWidth),
-		padString("REVIEWED", reviewedWidth))
+		PadString("ST", statusWidth),
+		PadString("PR", prWidth),
+		PadString("TITLE", titleWidth),
+		PadString("AUTHOR", authorWidth),
+		PadString("BRANCH", branchWidth),
+		PadString("TARGET", targetWidth),
+		PadString("STATUS", stateWidth),
+		PadString("REVIEWED", reviewedWidth))
 	if isKonflux {
-		fmt.Printf(" %s", padString("TEKTON", tektonWidth))
+		fmt.Printf(" %s", PadString("TEKTON", tektonWidth))
 	}
 	fmt.Printf("\n")
 
 	// Print separator line
 	fmt.Printf("%s %s %s %s %s %s %s %s",
-		padString(strings.Repeat("-", statusWidth), statusWidth),
-		padString(strings.Repeat("-", prWidth), prWidth),
-		padString(strings.Repeat("-", titleWidth), titleWidth),
-		padString(strings.Repeat("-", authorWidth), authorWidth),
-		padString(strings.Repeat("-", branchWidth), branchWidth),
-		padString(strings.Repeat("-", targetWidth), targetWidth),
-		padString(strings.Repeat("-", stateWidth), stateWidth),
-		padString(strings.Repeat("-", reviewedWidth), reviewedWidth))
+		PadString(strings.Repeat("-", statusWidth), statusWidth),
+		PadString(strings.Repeat("-", prWidth), prWidth),
+		PadString(strings.Repeat("-", titleWidth), titleWidth),
+		PadString(strings.Repeat("-", authorWidth), authorWidth),
+		PadString(strings.Repeat("-", branchWidth), branchWidth),
+		PadString(strings.Repeat("-", targetWidth), targetWidth),
+		PadString(strings.Repeat("-", stateWidth), stateWidth),
+		PadString(strings.Repeat("-", reviewedWidth), reviewedWidth))
 	if isKonflux {
-		fmt.Printf(" %s", padString(strings.Repeat("-", tektonWidth), tektonWidth))
+		fmt.Printf(" %s", PadString(strings.Repeat("-", tektonWidth), tektonWidth))
 	}
 	fmt.Printf("\n")
 
@@ -1587,10 +1587,10 @@ func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.
 
 		// Prepare table data
 		prLink := formatPRLink(owner, repo, pr.Number)
-		title := truncateString(pr.Title, titleWidth)
-		author := truncateString(pr.User.Login, authorWidth)
-		branch := truncateString(pr.Head.Ref, branchWidth)
-		target := truncateString(pr.Base.Ref, targetWidth)
+		title := TruncateString(pr.Title, titleWidth)
+		author := TruncateString(pr.User.Login, authorWidth)
+		branch := TruncateString(pr.Head.Ref, branchWidth)
+		target := TruncateString(pr.Base.Ref, targetWidth)
 
 		// Determine status text
 		status := ""
@@ -1604,7 +1604,7 @@ func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.
 		if hasMigration {
 			status += " 🚨"
 		}
-		status = truncateString(status, stateWidth)
+		status = TruncateString(status, stateWidth)
 
 		// Determine reviewed status
 		reviewedStatus := ""
@@ -1616,14 +1616,14 @@ func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.
 
 		// Print the row with proper padding
 		fmt.Printf("%s %s %s %s %s %s %s %s",
-			padString(icon, statusWidth),
-			padString(prLink, prWidth),
-			padString(title, titleWidth),
-			padString(author, authorWidth),
-			padString(branch, branchWidth),
-			padString(target, targetWidth),
-			padString(status, stateWidth),
-			padString(reviewedStatus, reviewedWidth))
+			PadString(icon, statusWidth),
+			PadString(prLink, prWidth),
+			PadString(title, titleWidth),
+			PadString(author, authorWidth),
+			PadString(branch, branchWidth),
+			PadString(target, targetWidth),
+			PadString(status, stateWidth),
+			PadString(reviewedStatus, reviewedWidth))
 
 		if isKonflux {
 			tektonStatus := ""
@@ -1632,7 +1632,7 @@ func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.
 			} else {
 				tektonStatus = "❌"
 			}
-			fmt.Printf(" %s", padString(tektonStatus, tektonWidth))
+			fmt.Printf(" %s", PadString(tektonStatus, tektonWidth))
 		}
 
 		fmt.Printf("\n")
