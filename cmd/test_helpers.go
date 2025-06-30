@@ -39,6 +39,14 @@ func HasMigrationWarningTest(pr PullRequest) bool {
 	return hasMigrationWarning(pr)
 }
 
+func NeedsRebaseTest(pr PullRequest) bool {
+	return needsRebase(pr)
+}
+
+func IsBlockedTest(pr PullRequest) bool {
+	return isBlocked(pr)
+}
+
 func ColorizeGitDiffTest(diff string) string {
 	return colorizeGitDiff(diff)
 }

@@ -426,6 +426,20 @@ func promptForApproval(pr PullRequest, owner, repo string, client api.RESTClient
 	fmt.Printf("   Author: @%s\n", pr.User.Login)
 	fmt.Printf("   Branch: %s → %s\n", pr.Head.Ref, pr.Base.Ref)
 
+	// Show rebase status
+	if needsRebase(pr) {
+		fmt.Printf("   🔄 Rebase needed: PR is behind the target branch or has conflicts\n")
+	} else {
+		fmt.Printf("   ✅ Up to date: No rebase needed\n")
+	}
+
+	// Show blocked status
+	if isBlocked(pr) {
+		fmt.Printf("   🚫 Blocked: PR is blocked from merging (failed checks, missing reviews, etc.)\n")
+	} else {
+		fmt.Printf("   ✅ Not blocked: PR can be merged when ready\n")
+	}
+
 	// Get file count (and optionally display files if --show-files is used)
 	filesPath := fmt.Sprintf("repos/%s/%s/pulls/%d/files", owner, repo, pr.Number)
 	var allFiles []PRFile
@@ -868,6 +882,21 @@ func isOnHold(pr PullRequest) bool {
 		}
 	}
 	return false
+}
+
+// needsRebase checks if a PR needs a rebase based on mergeable_state
+func needsRebase(pr PullRequest) bool {
+	switch pr.MergeableState {
+	case "dirty", "behind":
+		return true
+	default:
+		return false
+	}
+}
+
+// isBlocked checks if a PR is blocked from merging based on mergeable_state
+func isBlocked(pr PullRequest) bool {
+	return pr.MergeableState == "blocked"
 }
 
 // isReviewed checks if a PR has any approved reviews
@@ -1657,6 +1686,8 @@ func displayLegend(isKonflux bool) {
 	fmt.Println("Legend:")
 	fmt.Println("  Status: 🟢 open  🟡 draft  🔶 on hold  🔴 closed  🟣 merged")
 	fmt.Println("  Reviewed: ✅ approved  ❌ not approved")
+	fmt.Println("  Rebase: ✅ up to date  🔄 needs rebase")
+	fmt.Println("  Blocked: ✅ not blocked  🚫 blocked from merging")
 	if isKonflux {
 		fmt.Println("  Tekton: ✅ exclusively Tekton files  ❌ mixed/other files")
 		fmt.Println("  🚨 = migration warning")
@@ -1677,17 +1708,19 @@ func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.
 	const (
 		statusWidth   = 2  // Emoji width
 		prWidth       = 6  // "#1234"
-		titleWidth    = 45 // Shorter titles
-		authorWidth   = 20 // Author names (increased for longer usernames)
+		titleWidth    = 41 // Shorter titles (reduced to fit blocked column)
+		authorWidth   = 16 // Author names (reduced to fit blocked column)
 		branchWidth   = 14 // Source branch names
 		targetWidth   = 12 // Target branch names
 		stateWidth    = 10 // "STATUS"
 		reviewedWidth = 8  // "REVIEWED"
+		rebaseWidth   = 6  // "REBASE"
+		blockedWidth  = 7  // "BLOCKED"
 		tektonWidth   = 6  // "TEKTON"
 	)
 
 	// Print table header
-	fmt.Printf("%s %s %s %s %s %s %s %s",
+	fmt.Printf("%s %s %s %s %s %s %s %s %s %s",
 		PadString("ST", statusWidth),
 		PadString("PR", prWidth),
 		PadString("TITLE", titleWidth),
@@ -1695,14 +1728,16 @@ func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.
 		PadString("BRANCH", branchWidth),
 		PadString("TARGET", targetWidth),
 		PadString("STATUS", stateWidth),
-		PadString("REVIEWED", reviewedWidth))
+		PadString("REVIEWED", reviewedWidth),
+		PadString("REBASE", rebaseWidth),
+		PadString("BLOCKED", blockedWidth))
 	if isKonflux {
 		fmt.Printf(" %s", PadString("TEKTON", tektonWidth))
 	}
 	fmt.Printf("\n")
 
 	// Print separator line
-	fmt.Printf("%s %s %s %s %s %s %s %s",
+	fmt.Printf("%s %s %s %s %s %s %s %s %s %s",
 		PadString(strings.Repeat("-", statusWidth), statusWidth),
 		PadString(strings.Repeat("-", prWidth), prWidth),
 		PadString(strings.Repeat("-", titleWidth), titleWidth),
@@ -1710,7 +1745,9 @@ func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.
 		PadString(strings.Repeat("-", branchWidth), branchWidth),
 		PadString(strings.Repeat("-", targetWidth), targetWidth),
 		PadString(strings.Repeat("-", stateWidth), stateWidth),
-		PadString(strings.Repeat("-", reviewedWidth), reviewedWidth))
+		PadString(strings.Repeat("-", reviewedWidth), reviewedWidth),
+		PadString(strings.Repeat("-", rebaseWidth), rebaseWidth),
+		PadString(strings.Repeat("-", blockedWidth), blockedWidth))
 	if isKonflux {
 		fmt.Printf(" %s", PadString(strings.Repeat("-", tektonWidth), tektonWidth))
 	}
@@ -1783,8 +1820,24 @@ func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.
 			reviewedStatus = "❌"
 		}
 
+		// Determine rebase status
+		rebaseStatus := ""
+		if needsRebase(pr) {
+			rebaseStatus = "🔄"
+		} else {
+			rebaseStatus = "✅"
+		}
+
+		// Determine blocked status
+		blockedStatus := ""
+		if isBlocked(pr) {
+			blockedStatus = "🚫"
+		} else {
+			blockedStatus = "✅"
+		}
+
 		// Print the row with proper padding
-		fmt.Printf("%s %s %s %s %s %s %s %s",
+		fmt.Printf("%s %s %s %s %s %s %s %s %s %s",
 			PadString(icon, statusWidth),
 			PadString(prLink, prWidth),
 			PadString(title, titleWidth),
@@ -1792,7 +1845,9 @@ func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.
 			PadString(branch, branchWidth),
 			PadString(target, targetWidth),
 			PadString(status, stateWidth),
-			PadString(reviewedStatus, reviewedWidth))
+			PadString(reviewedStatus, reviewedWidth),
+			PadString(rebaseStatus, rebaseWidth),
+			PadString(blockedStatus, blockedWidth))
 
 		if isKonflux {
 			tektonStatus := ""

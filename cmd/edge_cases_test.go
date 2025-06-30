@@ -215,6 +215,107 @@ var _ = Describe("Edge Cases and Complex Scenarios", func() {
 			})
 		})
 
+		Describe("Rebase Detection", func() {
+			It("should detect when PR needs rebase due to dirty state", func() {
+				pr := cmd.PullRequest{
+					MergeableState: "dirty",
+				}
+				needsRebase := cmd.NeedsRebaseTest(pr)
+				Expect(needsRebase).To(BeTrue())
+			})
+
+			It("should detect when PR needs rebase due to being behind", func() {
+				pr := cmd.PullRequest{
+					MergeableState: "behind",
+				}
+				needsRebase := cmd.NeedsRebaseTest(pr)
+				Expect(needsRebase).To(BeTrue())
+			})
+
+			It("should detect when PR is up to date", func() {
+				pr := cmd.PullRequest{
+					MergeableState: "clean",
+				}
+				needsRebase := cmd.NeedsRebaseTest(pr)
+				Expect(needsRebase).To(BeFalse())
+			})
+
+			It("should handle other mergeable states", func() {
+				states := []string{"blocked", "unstable", "unknown", ""}
+				for _, state := range states {
+					pr := cmd.PullRequest{
+						MergeableState: state,
+					}
+					needsRebase := cmd.NeedsRebaseTest(pr)
+					Expect(needsRebase).To(BeFalse(), "State %s should not require rebase", state)
+				}
+			})
+
+			It("should handle missing mergeable state", func() {
+				pr := cmd.PullRequest{} // No MergeableState field set
+				needsRebase := cmd.NeedsRebaseTest(pr)
+				Expect(needsRebase).To(BeFalse())
+			})
+		})
+
+		Describe("Blocked Status Detection", func() {
+			It("should detect when PR is blocked", func() {
+				pr := cmd.PullRequest{
+					MergeableState: "blocked",
+				}
+				blocked := cmd.IsBlockedTest(pr)
+				Expect(blocked).To(BeTrue())
+			})
+
+			It("should detect when PR is not blocked (clean)", func() {
+				pr := cmd.PullRequest{
+					MergeableState: "clean",
+				}
+				blocked := cmd.IsBlockedTest(pr)
+				Expect(blocked).To(BeFalse())
+			})
+
+			It("should detect when PR is not blocked (dirty)", func() {
+				pr := cmd.PullRequest{
+					MergeableState: "dirty",
+				}
+				blocked := cmd.IsBlockedTest(pr)
+				Expect(blocked).To(BeFalse())
+			})
+
+			It("should detect when PR is not blocked (behind)", func() {
+				pr := cmd.PullRequest{
+					MergeableState: "behind",
+				}
+				blocked := cmd.IsBlockedTest(pr)
+				Expect(blocked).To(BeFalse())
+			})
+
+			It("should detect when PR is not blocked (unstable)", func() {
+				pr := cmd.PullRequest{
+					MergeableState: "unstable",
+				}
+				blocked := cmd.IsBlockedTest(pr)
+				Expect(blocked).To(BeFalse())
+			})
+
+			It("should detect when PR is not blocked (unknown)", func() {
+				pr := cmd.PullRequest{
+					MergeableState: "unknown",
+				}
+				blocked := cmd.IsBlockedTest(pr)
+				Expect(blocked).To(BeFalse())
+			})
+
+			It("should handle empty mergeable state", func() {
+				pr := cmd.PullRequest{
+					MergeableState: "",
+				}
+				blocked := cmd.IsBlockedTest(pr)
+				Expect(blocked).To(BeFalse())
+			})
+		})
+
 		Describe("Migration Warning Detection", func() {
 			It("should detect migration warnings in body", func() {
 				pr := cmd.PullRequest{Body: "This PR contains ⚠️[migration] changes"}
