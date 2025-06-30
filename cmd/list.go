@@ -416,6 +416,7 @@ const (
 	ApprovalResultSkip ApprovalResult = iota
 	ApprovalResultApprove
 	ApprovalResultHold
+	ApprovalResultQuit
 )
 
 func promptForApproval(pr PullRequest, owner, repo string, client api.RESTClient, config ApprovalConfig) ApprovalResult {
@@ -522,8 +523,7 @@ func promptForApproval(pr PullRequest, owner, repo string, client api.RESTClient
 			return ApprovalResultApprove
 		case "q", "quit":
 			fmt.Println("Quitting approval process.")
-			os.Exit(0)
-			return ApprovalResultSkip // This won't be reached but satisfies the compiler
+			return ApprovalResultQuit
 		case "h", "hold":
 			// Prompt for additional comment
 			fmt.Printf("Enter an optional comment to add with /hold (or press Enter for none): ")
@@ -594,18 +594,154 @@ func promptForApproval(pr PullRequest, owner, repo string, client api.RESTClient
 }
 
 func approvePRsWithConfig(client api.RESTClient, owner, repo string, pullRequests []PullRequest, config ApprovalConfig) {
-	approvedCount := 0
-	skippedCount := 0
-	alreadyApprovedCount := 0
-	userSkippedCount := 0
-	heldCount := 0
-
 	prType := "PRs"
 	if config.IsKonflux {
 		prType = "Konflux PRs"
 	}
 	fmt.Printf("\n🎯 Interactive approval mode for %d %s\n", len(pullRequests), prType)
 
+	// Keep track of processed PRs to remove them from subsequent displays
+	processedPRs := make(map[int]bool)
+	approvedCount := 0
+	skippedCount := 0
+	heldCount := 0
+
+	for {
+		// Filter out PRs that can't be approved (closed, draft, on hold) and already processed
+		var approvablePRs []PullRequest
+		var displayPRs []PullRequest
+		var prIndexMap = make(map[int]int) // Maps PR number to index in approvablePRs
+
+		for _, pr := range pullRequests {
+			// Skip already processed PRs
+			if processedPRs[pr.Number] {
+				continue
+			}
+
+			// Add to display list (for table)
+			displayPRs = append(displayPRs, pr)
+
+			// Add to approvable list if eligible
+			if pr.State == "open" && !pr.Draft && !isOnHold(pr) {
+				prIndexMap[pr.Number] = len(approvablePRs)
+				approvablePRs = append(approvablePRs, pr)
+			}
+		}
+
+		// Check if we have any PRs left to display
+		if len(displayPRs) == 0 {
+			fmt.Printf("\n✅ All PRs have been processed!\n")
+			break
+		}
+
+		// Display the PR table (excluding processed PRs)
+		fmt.Printf("═══════════════════════════════════════════════════════════════\n")
+		displayPRTable(displayPRs, owner, repo, &client, config.IsKonflux)
+		fmt.Printf("═══════════════════════════════════════════════════════════════\n")
+
+		// Check if we have any approvable PRs left
+		if len(approvablePRs) == 0 {
+			fmt.Printf("❌ No more PRs available for approval (remaining are closed, draft, or on hold)\n")
+			break
+		}
+
+		// Prompt for PR selection
+		fmt.Printf("\n📝 Select PR to approve:\n")
+		fmt.Printf("   Enter PR number (default: %d for first approvable PR)\n", approvablePRs[0].Number)
+		fmt.Printf("   Or press 'q' to quit\n")
+		fmt.Printf("   Available for approval: ")
+
+		var availableNumbers []string
+		for _, pr := range approvablePRs {
+			availableNumbers = append(availableNumbers, fmt.Sprintf("#%d", pr.Number))
+		}
+		fmt.Printf("%s\n", strings.Join(availableNumbers, ", "))
+
+		fmt.Print("\nPR to approve: ")
+
+		reader := bufio.NewReader(os.Stdin)
+		input, err := reader.ReadString('\n')
+		if err != nil {
+			if err == io.EOF {
+				fmt.Printf("(EOF - exiting approval process)\n")
+				break
+			}
+			fmt.Printf("Error reading input: %v\n", err)
+			break
+		}
+
+		input = strings.TrimSpace(input)
+
+		// Handle quit
+		if strings.ToLower(input) == "q" || strings.ToLower(input) == "quit" {
+			fmt.Println("Exiting approval process.")
+			break
+		}
+
+		// Determine which PR to approve
+		var selectedPR *PullRequest
+
+		if input == "" {
+			// Default to first approvable PR
+			selectedPR = &approvablePRs[0]
+			fmt.Printf("Using default PR: #%d\n", selectedPR.Number)
+		} else {
+			// Parse the PR number (remove # prefix if present)
+			input = strings.TrimPrefix(input, "#")
+
+			prNumber, err := strconv.Atoi(input)
+			if err != nil {
+				fmt.Printf("❌ Invalid PR number: %s\n", input)
+				fmt.Printf("Press Enter to continue or 'q' to quit.\n")
+				continue
+			}
+
+			// Find the PR in our approvable list
+			index, exists := prIndexMap[prNumber]
+			if !exists {
+				fmt.Printf("❌ PR #%d is not available for approval (may be closed, draft, on hold, or not exist)\n", prNumber)
+				fmt.Printf("   Available PRs: %s\n", strings.Join(availableNumbers, ", "))
+				fmt.Printf("Press Enter to continue or 'q' to quit.\n")
+				continue
+			}
+
+			selectedPR = &approvablePRs[index]
+			fmt.Printf("Selected PR: #%d\n", selectedPR.Number)
+		}
+
+		// Now proceed with the approval flow for the selected PR
+		fmt.Printf("═══════════════════════════════════════════════════════════════\n")
+		result := approveSinglePR(client, owner, repo, *selectedPR, config)
+
+		// Mark this PR as processed and update counters
+		processedPRs[selectedPR.Number] = true
+		switch result {
+		case ApprovalResultApprove:
+			approvedCount++
+		case ApprovalResultSkip:
+			skippedCount++
+		case ApprovalResultHold:
+			heldCount++
+		case ApprovalResultQuit:
+			fmt.Println("Exiting approval process.")
+			goto exitLoop
+		}
+
+		fmt.Printf("\n")
+	}
+
+exitLoop:
+	// Print final summary
+	fmt.Printf("═══════════════════════════════════════════════════════════════\n")
+	fmt.Printf("📊 Final Approval Summary:\n")
+	fmt.Printf("   ✅ Approved: %d\n", approvedCount)
+	fmt.Printf("   ❌ Skipped: %d\n", skippedCount)
+	fmt.Printf("   ⏸️  Put on hold: %d\n", heldCount)
+	fmt.Printf("   📊 Total processed: %d\n", approvedCount+skippedCount+heldCount)
+}
+
+// approveSinglePR handles the approval process for a single PR
+func approveSinglePR(client api.RESTClient, owner, repo string, pr PullRequest, config ApprovalConfig) ApprovalResult {
 	// Build help message based on what's already shown
 	helpOptions := []string{"[y]es to approve", "[N]o to skip (default)", "[h]old", "[q]uit"}
 	if !showFiles {
@@ -619,100 +755,76 @@ func approvePRsWithConfig(client api.RESTClient, owner, repo string, pullRequest
 	fmt.Printf("Commands: %s\n", strings.Join(helpOptions, ", "))
 	fmt.Printf("═══════════════════════════════════════════════════════════════\n")
 
-	for _, pr := range pullRequests {
-		// Only approve open PRs
-		if pr.State != "open" {
-			fmt.Printf("⏭️  Auto-skipping %s (state: %s): %s\n", formatPRLink(owner, repo, pr.Number), pr.State, pr.Title)
-			skippedCount++
-			continue
-		}
-
-		// Skip draft PRs
-		if pr.Draft {
-			fmt.Printf("⏭️  Auto-skipping %s (draft): %s\n", formatPRLink(owner, repo, pr.Number), pr.Title)
-			skippedCount++
-			continue
-		}
-
-		// Skip PRs that are on hold
-		if isOnHold(pr) {
-			fmt.Printf("⏭️  Auto-skipping %s (on hold): %s\n", formatPRLink(owner, repo, pr.Number), pr.Title)
-			skippedCount++
-			continue
-		}
-
-		// Check if PR is already approved by current user
-		reviewsPath := fmt.Sprintf("repos/%s/%s/pulls/%d/reviews", owner, repo, pr.Number)
-		var reviews []Review
-		err := client.Get(reviewsPath, &reviews)
-		if err != nil {
-			fmt.Printf("⚠️  Could not check existing reviews for %s: %v\n", formatPRLink(owner, repo, pr.Number), err)
-			// Continue with prompt despite error
-		} else {
-			// Check if we already have an approval from any user
-			alreadyApproved := false
-			for _, review := range reviews {
-				if review.State == "APPROVED" {
-					alreadyApproved = true
-					break
-				}
-			}
-
-			if alreadyApproved {
-				fmt.Printf("✅ Already approved %s: %s\n", formatPRLink(owner, repo, pr.Number), pr.Title)
-				alreadyApprovedCount++
-				continue
+	// Check if PR is already approved by current user
+	reviewsPath := fmt.Sprintf("repos/%s/%s/pulls/%d/reviews", owner, repo, pr.Number)
+	var reviews []Review
+	err := client.Get(reviewsPath, &reviews)
+	if err != nil {
+		fmt.Printf("⚠️  Could not check existing reviews for %s: %v\n", formatPRLink(owner, repo, pr.Number), err)
+		// Continue with prompt despite error
+	} else {
+		// Check if we already have an approval from any user
+		alreadyApproved := false
+		for _, review := range reviews {
+			if review.State == "APPROVED" {
+				alreadyApproved = true
+				break
 			}
 		}
 
-		// Prompt user for approval decision
-		result := promptForApproval(pr, owner, repo, client, config)
-		switch result {
-		case ApprovalResultSkip:
-			userSkippedCount++
-			continue
-		case ApprovalResultHold:
-			heldCount++
-			continue
-		case ApprovalResultApprove:
-			// Continue with approval process below
+		if alreadyApproved {
+			fmt.Printf("✅ PR %s is already approved: %s\n", formatPRLink(owner, repo, pr.Number), pr.Title)
+			fmt.Printf("Do you want to continue anyway? [y/N]: ")
+
+			reader := bufio.NewReader(os.Stdin)
+			response, err := reader.ReadString('\n')
+			if err != nil || strings.ToLower(strings.TrimSpace(response)) != "y" {
+				fmt.Printf("Skipping already approved PR.\n")
+				return ApprovalResultSkip
+			}
 		}
-
-		// Create approval review
-		reviewPath := fmt.Sprintf("repos/%s/%s/pulls/%d/reviews", owner, repo, pr.Number)
-		review := ReviewRequest{
-			Body:  "/lgtm",
-			Event: "APPROVE",
-		}
-
-		// Convert review to JSON
-		reviewJSON, err := json.Marshal(review)
-		if err != nil {
-			fmt.Printf("❌ Failed to marshal review for %s: %v\n", formatPRLink(owner, repo, pr.Number), err)
-			continue
-		}
-
-		fmt.Printf("✅ Approving %s: %s\n", formatPRLink(owner, repo, pr.Number), pr.Title)
-
-		// Add the approval review
-		err = client.Post(reviewPath, bytes.NewReader(reviewJSON), nil)
-		if err != nil {
-			fmt.Printf("❌ Failed to approve %s: %v\n", formatPRLink(owner, repo, pr.Number), err)
-			continue
-		}
-
-		approvedCount++
-		fmt.Printf("   ✓ Successfully approved %s\n", formatPRLink(owner, repo, pr.Number))
 	}
 
-	// Print summary
-	fmt.Printf("\n📊 Approval Summary:\n")
-	fmt.Printf("   ✅ Approved: %d\n", approvedCount)
-	fmt.Printf("   ⏭️  Auto-skipped: %d\n", skippedCount)
-	fmt.Printf("   ✅ Already approved: %d\n", alreadyApprovedCount)
-	fmt.Printf("   ❌ User skipped: %d\n", userSkippedCount)
-	fmt.Printf("   ⏸️  Put on hold: %d\n", heldCount)
-	fmt.Printf("   📊 Total processed: %d\n", len(pullRequests))
+	// Prompt user for approval decision
+	result := promptForApproval(pr, owner, repo, client, config)
+	switch result {
+	case ApprovalResultSkip:
+		fmt.Printf("❌ Skipped PR %s\n", formatPRLink(owner, repo, pr.Number))
+		return ApprovalResultSkip
+	case ApprovalResultHold:
+		fmt.Printf("⏸️  Put PR %s on hold\n", formatPRLink(owner, repo, pr.Number))
+		return ApprovalResultHold
+	case ApprovalResultQuit:
+		return ApprovalResultQuit
+	case ApprovalResultApprove:
+		// Continue with approval process below
+	}
+
+	// Create approval review
+	reviewPath := fmt.Sprintf("repos/%s/%s/pulls/%d/reviews", owner, repo, pr.Number)
+	review := ReviewRequest{
+		Body:  "/lgtm",
+		Event: "APPROVE",
+	}
+
+	// Convert review to JSON
+	reviewJSON, err := json.Marshal(review)
+	if err != nil {
+		fmt.Printf("❌ Failed to marshal review for %s: %v\n", formatPRLink(owner, repo, pr.Number), err)
+		return ApprovalResultSkip
+	}
+
+	fmt.Printf("✅ Approving %s: %s\n", formatPRLink(owner, repo, pr.Number), pr.Title)
+
+	// Add the approval review
+	err = client.Post(reviewPath, bytes.NewReader(reviewJSON), nil)
+	if err != nil {
+		fmt.Printf("❌ Failed to approve %s: %v\n", formatPRLink(owner, repo, pr.Number), err)
+		return ApprovalResultSkip
+	}
+
+	fmt.Printf("   ✓ Successfully approved %s\n", formatPRLink(owner, repo, pr.Number))
+	return ApprovalResultApprove
 }
 
 // isOnHold checks if a PR has the "do-not-merge/hold" label
