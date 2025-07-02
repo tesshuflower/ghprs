@@ -962,8 +962,16 @@ func isBlockedWithCache(cache *PRDetailsCache, client api.RESTClient, owner, rep
 	return isBlocked(*fullPR)
 }
 
-// isReviewed checks if a PR has any approved reviews
-func isReviewed(client api.RESTClient, owner, repo string, prNumber int) bool {
+// isReviewed checks if a PR has any approved reviews or approved/lgtm labels
+func isReviewed(client api.RESTClient, owner, repo string, prNumber int, labels []Label) bool {
+	// First check for approved/lgtm labels
+	for _, label := range labels {
+		if label.Name == "approved" || label.Name == "lgtm" {
+			return true
+		}
+	}
+
+	// Then check for approved reviews
 	reviewsPath := fmt.Sprintf("repos/%s/%s/pulls/%d/reviews", owner, repo, prNumber)
 	var reviews []Review
 	err := client.Get(reviewsPath, &reviews)
@@ -1882,7 +1890,7 @@ func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.
 
 		// Determine reviewed status
 		reviewedStatus := ""
-		if isReviewed(*client, owner, repo, pr.Number) {
+		if isReviewed(*client, owner, repo, pr.Number, pr.Labels) {
 			reviewedStatus = "✅"
 		} else {
 			reviewedStatus = "❌"
