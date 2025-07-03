@@ -274,26 +274,31 @@ func listPullRequests(args []string, authorFilter string, isKonflux bool) {
 		}
 	} else {
 		// Use configured repositories first, then fall back to auto-detection
-		if len(config.Repositories) > 0 {
+		configRepos := config.GetRepositories(isKonflux)
+		if len(configRepos) > 0 {
 			// If there are multiple repositories, prompt the user to select which repository they want to see
-			if len(config.Repositories) > 1 {
-				selectedRepo := promptForRepositorySelection(config.Repositories)
+			if len(configRepos) > 1 {
+				selectedRepo := promptForRepositorySelection(configRepos)
 				if selectedRepo == "" {
 					fmt.Println("No repository selected. Exiting.")
 					return
 				}
 				if selectedRepo == "ALL" {
-					repositories = config.Repositories
+					repositories = configRepos
 				} else {
 					repositories = []string{selectedRepo}
 				}
 			} else {
-				repositories = config.Repositories
+				repositories = configRepos
 			}
 		} else if currentRepo, err := repository.Current(); err == nil {
 			repositories = []string{fmt.Sprintf("%s/%s", currentRepo.Owner, currentRepo.Name)}
 		} else {
-			log.Fatal("No repositories specified and no default repositories configured. Please specify owner/repo manually, configure default repositories with 'ghprs config add-repo owner/repo', or run from a git repository.")
+			if isKonflux {
+				log.Fatal("No repositories specified and no Konflux repositories configured. Please specify owner/repo manually, configure Konflux repositories with 'ghprs config add-konflux-repo owner/repo', or run from a git repository.")
+			} else {
+				log.Fatal("No repositories specified and no default repositories configured. Please specify owner/repo manually, configure default repositories with 'ghprs config add-repo owner/repo', or run from a git repository.")
+			}
 		}
 	}
 

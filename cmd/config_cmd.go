@@ -14,7 +14,9 @@ var configCmd = &cobra.Command{
 	Short: "Manage ghprs configuration",
 	Long: `Manage ghprs configuration file.
 
-The configuration file allows you to set default repositories, states, and limits.
+The configuration file allows you to set repositories, states, and limits.
+Repositories can be marked as Konflux repositories. 'ghprs list' shows all repositories,
+while 'ghprs konflux' shows only repositories marked as Konflux.
 Configuration is stored in ~/.config/ghprs/config.yaml`,
 }
 
@@ -37,12 +39,16 @@ var configShowCmd = &cobra.Command{
 		fmt.Printf("  Default Limit: %d\n", config.Defaults.Limit)
 
 		if len(config.Repositories) > 0 {
-			fmt.Println("  Default Repositories:")
+			fmt.Println("  Repositories:")
 			for _, repo := range config.Repositories {
-				fmt.Printf("    - %s\n", repo)
+				if repo.Konflux {
+					fmt.Printf("    - %s (Konflux)\n", repo.Name)
+				} else {
+					fmt.Printf("    - %s\n", repo.Name)
+				}
 			}
 		} else {
-			fmt.Println("  Default Repositories: (none)")
+			fmt.Println("  Repositories: (none)")
 		}
 	},
 }
@@ -65,7 +71,9 @@ var configInitCmd = &cobra.Command{
 		fmt.Printf("  State: %s\n", config.Defaults.State)
 		fmt.Printf("  Limit: %d\n", config.Defaults.Limit)
 		fmt.Println("  Repositories: (none)")
-		fmt.Println("\nEdit the file to add your default repositories and customize settings.")
+		fmt.Println("\nEdit the file to add your repositories and customize settings.")
+		fmt.Println("Use 'ghprs config add-repo owner/repo' to add regular repositories.")
+		fmt.Println("Use 'ghprs config add-konflux-repo owner/repo' to add repositories for Konflux use.")
 	},
 }
 
@@ -90,16 +98,11 @@ var configAddRepoCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
-		// Check if repo already exists
-		for _, existingRepo := range config.Repositories {
-			if existingRepo == repo {
-				fmt.Printf("Repository %s is already in the configuration\n", repo)
-				return
-			}
+		// Add the repository using the helper method
+		if !config.AddRepository(repo, false) {
+			fmt.Printf("Repository %s is already in the configuration\n", repo)
+			return
 		}
-
-		// Add the repository
-		config.Repositories = append(config.Repositories, repo)
 
 		if err := SaveConfig(config); err != nil {
 			fmt.Printf("Error saving config: %v\n", err)
@@ -125,23 +128,11 @@ var configRemoveRepoCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
-		// Find and remove the repository
-		found := false
-		newRepos := []string{}
-		for _, existingRepo := range config.Repositories {
-			if existingRepo != repo {
-				newRepos = append(newRepos, existingRepo)
-			} else {
-				found = true
-			}
-		}
-
-		if !found {
+		// Remove the repository using the helper method
+		if !config.RemoveRepository(repo, false) {
 			fmt.Printf("Repository %s not found in configuration\n", repo)
 			return
 		}
-
-		config.Repositories = newRepos
 
 		if err := SaveConfig(config); err != nil {
 			fmt.Printf("Error saving config: %v\n", err)
@@ -205,6 +196,72 @@ var configSetCmd = &cobra.Command{
 	},
 }
 
+// configAddKonfluxRepoCmd adds a repository and marks it as a Konflux repository
+var configAddKonfluxRepoCmd = &cobra.Command{
+	Use:   "add-konflux-repo <owner/repo>",
+	Short: "Add a repository and mark it as a Konflux repository",
+	Long:  `Add a repository to the configuration and mark it as a Konflux repository. Konflux repositories will be included when running 'ghprs konflux' command.`,
+	Args:  cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		repo := args[0]
+
+		// Validate repo format
+		if !strings.Contains(repo, "/") || strings.Count(repo, "/") != 1 {
+			fmt.Println("Repository must be in the format 'owner/repo'")
+			os.Exit(1)
+		}
+
+		config, err := LoadConfig()
+		if err != nil {
+			fmt.Printf("Error loading config: %v\n", err)
+			os.Exit(1)
+		}
+
+		// Add the repository using the helper method
+		if !config.AddRepository(repo, true) {
+			fmt.Printf("Repository %s is already configured as a Konflux repository\n", repo)
+			return
+		}
+
+		if err := SaveConfig(config); err != nil {
+			fmt.Printf("Error saving config: %v\n", err)
+			os.Exit(1)
+		}
+
+		fmt.Printf("Added repository %s and marked it as a Konflux repository\n", repo)
+	},
+}
+
+// configRemoveKonfluxRepoCmd removes the Konflux marking from a repository
+var configRemoveKonfluxRepoCmd = &cobra.Command{
+	Use:   "remove-konflux-repo <owner/repo>",
+	Short: "Remove the Konflux marking from a repository",
+	Long:  `Remove the Konflux marking from a repository in the configuration. The repository will remain in the list but will no longer be treated as a Konflux repository.`,
+	Args:  cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		repo := args[0]
+
+		config, err := LoadConfig()
+		if err != nil {
+			fmt.Printf("Error loading config: %v\n", err)
+			os.Exit(1)
+		}
+
+		// Remove the repository using the helper method
+		if !config.RemoveRepository(repo, true) {
+			fmt.Printf("Repository %s not found or not marked as a Konflux repository\n", repo)
+			return
+		}
+
+		if err := SaveConfig(config); err != nil {
+			fmt.Printf("Error saving config: %v\n", err)
+			os.Exit(1)
+		}
+
+		fmt.Printf("Removed Konflux marking from repository %s\n", repo)
+	},
+}
+
 func init() {
 	RootCmd.AddCommand(configCmd)
 
@@ -212,5 +269,7 @@ func init() {
 	configCmd.AddCommand(configInitCmd)
 	configCmd.AddCommand(configAddRepoCmd)
 	configCmd.AddCommand(configRemoveRepoCmd)
+	configCmd.AddCommand(configAddKonfluxRepoCmd)
+	configCmd.AddCommand(configRemoveKonfluxRepoCmd)
 	configCmd.AddCommand(configSetCmd)
 }
