@@ -850,6 +850,28 @@ func approveSinglePRWithCache(client api.RESTClient, owner, repo string, pr Pull
 		fmt.Printf("💬 Added comment to PR %s\n", formatPRLink(owner, repo, pr.Number))
 		return ApprovalResultComment
 	case ApprovalResultApprove:
+		// Check for migration warnings and ask for additional confirmation
+		if hasMigrationWarning(pr) {
+			fmt.Printf("\n🚨 ⚠️  MIGRATION WARNING DETECTED ⚠️  🚨\n")
+			fmt.Printf("This PR contains migration warnings which may indicate breaking changes or\n")
+			fmt.Printf("require special attention during deployment.\n\n")
+			fmt.Printf("Are you sure you want to approve this PR with migration warnings? [y/N]: ")
+
+			reader := bufio.NewReader(os.Stdin)
+			confirmResponse, err := reader.ReadString('\n')
+			if err != nil {
+				fmt.Printf("Error reading confirmation: %v (skipping PR)\n", err)
+				return ApprovalResultSkip
+			}
+
+			confirmResponse = strings.TrimSpace(strings.ToLower(confirmResponse))
+			if confirmResponse != "y" && confirmResponse != "yes" {
+				fmt.Printf("❌ Approval cancelled due to migration warnings. Skipping PR %s\n", formatPRLink(owner, repo, pr.Number))
+				return ApprovalResultSkip
+			}
+
+			fmt.Printf("✅ Confirmed - proceeding with approval despite migration warnings.\n")
+		}
 		// Continue with approval process below
 	}
 
