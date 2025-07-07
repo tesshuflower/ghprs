@@ -8,9 +8,15 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// RepositoryConfig represents a single repository configuration
+type RepositoryConfig struct {
+	Name    string `yaml:"name"`
+	Konflux bool   `yaml:"konflux,omitempty"`
+}
+
 // Config represents the application configuration
 type Config struct {
-	Repositories []string `yaml:"repositories"`
+	Repositories []RepositoryConfig `yaml:"repositories"`
 	Defaults     struct {
 		State string `yaml:"state"`
 		Limit int    `yaml:"limit"`
@@ -20,7 +26,7 @@ type Config struct {
 // DefaultConfig returns the default configuration
 func DefaultConfig() *Config {
 	return &Config{
-		Repositories: []string{},
+		Repositories: []RepositoryConfig{},
 		Defaults: struct {
 			State string `yaml:"state"`
 			Limit int    `yaml:"limit"`
@@ -88,4 +94,55 @@ func getConfigPath() string {
 // GetConfigPath returns the configuration file path (exported for CLI commands)
 func GetConfigPath() string {
 	return getConfigPath()
+}
+
+// GetRepositories returns the appropriate repository list based on whether it's Konflux or not
+func (c *Config) GetRepositories(isKonflux bool) []string {
+	var repos []string
+	for _, repo := range c.Repositories {
+		if !isKonflux || repo.Konflux {
+			repos = append(repos, repo.Name)
+		}
+	}
+	return repos
+}
+
+// AddRepository adds a repository to the list
+func (c *Config) AddRepository(repo string, isKonflux bool) bool {
+	// Check if repo already exists
+	for i, existingRepo := range c.Repositories {
+		if existingRepo.Name == repo {
+			// Update existing repo's Konflux flag if needed
+			if isKonflux && !existingRepo.Konflux {
+				c.Repositories[i].Konflux = true
+				return true
+			}
+			return false // Already exists with same settings
+		}
+	}
+
+	// Add new repository
+	c.Repositories = append(c.Repositories, RepositoryConfig{
+		Name:    repo,
+		Konflux: isKonflux,
+	})
+	return true
+}
+
+// RemoveRepository removes a repository from the list
+func (c *Config) RemoveRepository(repo string, isKonflux bool) bool {
+	for i, existingRepo := range c.Repositories {
+		if existingRepo.Name == repo {
+			if isKonflux && existingRepo.Konflux {
+				// Remove Konflux flag but keep repository if it's not exclusively Konflux
+				c.Repositories[i].Konflux = false
+				return true
+			} else if !isKonflux {
+				// Remove repository entirely
+				c.Repositories = append(c.Repositories[:i], c.Repositories[i+1:]...)
+				return true
+			}
+		}
+	}
+	return false
 }

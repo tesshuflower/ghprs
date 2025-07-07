@@ -274,26 +274,31 @@ func listPullRequests(args []string, authorFilter string, isKonflux bool) {
 		}
 	} else {
 		// Use configured repositories first, then fall back to auto-detection
-		if len(config.Repositories) > 0 {
+		configRepos := config.GetRepositories(isKonflux)
+		if len(configRepos) > 0 {
 			// If there are multiple repositories, prompt the user to select which repository they want to see
-			if len(config.Repositories) > 1 {
-				selectedRepo := promptForRepositorySelection(config.Repositories)
+			if len(configRepos) > 1 {
+				selectedRepo := promptForRepositorySelection(configRepos)
 				if selectedRepo == "" {
 					fmt.Println("No repository selected. Exiting.")
 					return
 				}
 				if selectedRepo == "ALL" {
-					repositories = config.Repositories
+					repositories = configRepos
 				} else {
 					repositories = []string{selectedRepo}
 				}
 			} else {
-				repositories = config.Repositories
+				repositories = configRepos
 			}
 		} else if currentRepo, err := repository.Current(); err == nil {
 			repositories = []string{fmt.Sprintf("%s/%s", currentRepo.Owner, currentRepo.Name)}
 		} else {
-			log.Fatal("No repositories specified and no default repositories configured. Please specify owner/repo manually, configure default repositories with 'ghprs config add-repo owner/repo', or run from a git repository.")
+			if isKonflux {
+				log.Fatal("No repositories specified and no Konflux repositories configured. Please specify owner/repo manually, configure Konflux repositories with 'ghprs config add-konflux-repo owner/repo', or run from a git repository.")
+			} else {
+				log.Fatal("No repositories specified and no default repositories configured. Please specify owner/repo manually, configure default repositories with 'ghprs config add-repo owner/repo', or run from a git repository.")
+			}
 		}
 	}
 
@@ -845,6 +850,28 @@ func approveSinglePRWithCache(client api.RESTClient, owner, repo string, pr Pull
 		fmt.Printf("💬 Added comment to PR %s\n", formatPRLink(owner, repo, pr.Number))
 		return ApprovalResultComment
 	case ApprovalResultApprove:
+		// Check for migration warnings and ask for additional confirmation
+		if hasMigrationWarning(pr) {
+			fmt.Printf("\n🚨 ⚠️  MIGRATION WARNING DETECTED ⚠️  🚨\n")
+			fmt.Printf("This PR contains migration warnings which may indicate breaking changes or\n")
+			fmt.Printf("require special attention during deployment.\n\n")
+			fmt.Printf("Are you sure you want to approve this PR with migration warnings? [y/N]: ")
+
+			reader := bufio.NewReader(os.Stdin)
+			confirmResponse, err := reader.ReadString('\n')
+			if err != nil {
+				fmt.Printf("Error reading confirmation: %v (skipping PR)\n", err)
+				return ApprovalResultSkip
+			}
+
+			confirmResponse = strings.TrimSpace(strings.ToLower(confirmResponse))
+			if confirmResponse != "y" && confirmResponse != "yes" {
+				fmt.Printf("❌ Approval cancelled due to migration warnings. Skipping PR %s\n", formatPRLink(owner, repo, pr.Number))
+				return ApprovalResultSkip
+			}
+
+			fmt.Printf("✅ Confirmed - proceeding with approval despite migration warnings.\n")
+		}
 		// Continue with approval process below
 	}
 
@@ -962,8 +989,16 @@ func isBlockedWithCache(cache *PRDetailsCache, client api.RESTClient, owner, rep
 	return isBlocked(*fullPR)
 }
 
-// isReviewed checks if a PR has any approved reviews
-func isReviewed(client api.RESTClient, owner, repo string, prNumber int) bool {
+// isReviewed checks if a PR has any approved reviews or approved/lgtm labels
+func isReviewed(client api.RESTClient, owner, repo string, prNumber int, labels []Label) bool {
+	// First check for approved/lgtm labels
+	for _, label := range labels {
+		if label.Name == "approved" || label.Name == "lgtm" {
+			return true
+		}
+	}
+
+	// Then check for approved reviews
 	reviewsPath := fmt.Sprintf("repos/%s/%s/pulls/%d/reviews", owner, repo, prNumber)
 	var reviews []Review
 	err := client.Get(reviewsPath, &reviews)
@@ -1882,7 +1917,7 @@ func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.
 
 		// Determine reviewed status
 		reviewedStatus := ""
-		if isReviewed(*client, owner, repo, pr.Number) {
+		if isReviewed(*client, owner, repo, pr.Number, pr.Labels) {
 			reviewedStatus = "✅"
 		} else {
 			reviewedStatus = "❌"

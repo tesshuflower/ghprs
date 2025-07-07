@@ -49,6 +49,10 @@ func IsBlockedTest(pr PullRequest) bool {
 	return isBlocked(pr)
 }
 
+func IsReviewedTest(client api.RESTClient, owner, repo string, prNumber int, labels []Label) bool {
+	return isReviewed(client, owner, repo, prNumber, labels)
+}
+
 func FetchPRDetailsTest(client api.RESTClient, owner, repo string, prNumber int) (*PullRequest, error) {
 	return fetchPRDetails(client, owner, repo, prNumber)
 }
