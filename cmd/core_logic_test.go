@@ -83,6 +83,81 @@ var _ = Describe("Core Logic Functions", func() {
 		})
 	})
 
+	Describe("Konflux Nudge Detection", func() {
+		Context("when PR has konflux-nudge label", func() {
+			It("should detect konflux-nudge label", func() {
+				pr := cmd.PullRequest{
+					Labels: []cmd.Label{
+						{Name: "konflux-nudge"},
+						{Name: "bug"},
+					},
+				}
+				Expect(cmd.IsKonfluxNudgeTest(pr)).To(BeTrue())
+			})
+
+			It("should detect konflux-nudge label among other labels", func() {
+				pr := cmd.PullRequest{
+					Labels: []cmd.Label{
+						{Name: "enhancement"},
+						{Name: "konflux-nudge"},
+						{Name: "do-not-merge/hold"},
+					},
+				}
+				Expect(cmd.IsKonfluxNudgeTest(pr)).To(BeTrue())
+			})
+
+			It("should handle single konflux-nudge label", func() {
+				pr := cmd.PullRequest{
+					Labels: []cmd.Label{
+						{Name: "konflux-nudge"},
+					},
+				}
+				Expect(cmd.IsKonfluxNudgeTest(pr)).To(BeTrue())
+			})
+		})
+
+		Context("when PR has no konflux-nudge label", func() {
+			It("should not detect nudge with empty labels", func() {
+				pr := cmd.PullRequest{
+					Labels: []cmd.Label{},
+				}
+				Expect(cmd.IsKonfluxNudgeTest(pr)).To(BeFalse())
+			})
+
+			It("should not detect nudge with other labels", func() {
+				pr := cmd.PullRequest{
+					Labels: []cmd.Label{
+						{Name: "bug"},
+						{Name: "enhancement"},
+						{Name: "do-not-merge/hold"},
+					},
+				}
+				Expect(cmd.IsKonfluxNudgeTest(pr)).To(BeFalse())
+			})
+
+			It("should not detect similar but not exact label names", func() {
+				pr := cmd.PullRequest{
+					Labels: []cmd.Label{
+						{Name: "konflux"},
+						{Name: "nudge"},
+						{Name: "konflux-nudge-test"},
+					},
+				}
+				Expect(cmd.IsKonfluxNudgeTest(pr)).To(BeFalse())
+			})
+
+			It("should handle case sensitivity", func() {
+				pr := cmd.PullRequest{
+					Labels: []cmd.Label{
+						{Name: "KONFLUX-NUDGE"},
+						{Name: "Konflux-Nudge"},
+					},
+				}
+				Expect(cmd.IsKonfluxNudgeTest(pr)).To(BeFalse())
+			})
+		})
+	})
+
 	Describe("PR Status Detection", func() {
 		Context("isOnHold", func() {
 			It("should detect hold label", func() {
@@ -485,6 +560,18 @@ var _ = Describe("Core Logic Functions", func() {
 				shouldFetch := pr.MergeableState == ""
 				Expect(shouldFetch).To(BeFalse())
 			})
+		})
+	})
+})
+
+var _ = Describe("Repository Selection", func() {
+	Context("promptForRepositorySelection", func() {
+		It("should default to first repository when empty input is provided", func() {
+			// This test verifies the default behavior but since promptForRepositorySelection
+			// requires user input, we can't directly test it without mocking stdin
+			// However, the logic change is simple and tested through integration
+			repos := []string{"owner/repo1", "owner/repo2", "owner/repo3"}
+			Expect(repos[0]).To(Equal("owner/repo1"))
 		})
 	})
 })

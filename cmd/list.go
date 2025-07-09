@@ -208,7 +208,7 @@ func promptForRepositorySelection(repositories []string) string {
 	fmt.Printf("  0. Cancel\n")
 
 	for {
-		fmt.Printf("\nSelect repository (1-%d, %d for all, 0 to cancel): ", len(repositories), len(repositories)+1)
+		fmt.Printf("\nSelect repository (1-%d, %d for all, 0 to cancel) [default: 1]: ", len(repositories), len(repositories)+1)
 
 		reader := bufio.NewReader(os.Stdin)
 		input, err := reader.ReadString('\n')
@@ -223,7 +223,8 @@ func promptForRepositorySelection(repositories []string) string {
 
 		input = strings.TrimSpace(input)
 		if input == "" {
-			continue
+			// Default to first repository
+			return repositories[0]
 		}
 
 		choice, err := strconv.Atoi(input)
@@ -304,13 +305,6 @@ func listPullRequests(args []string, authorFilter string, isKonflux bool) {
 
 	// Process each repository
 	for i, repoSpec := range repositories {
-		if len(repositories) > 1 {
-			if i > 0 {
-				fmt.Println() // Add spacing between repositories
-			}
-			fmt.Printf("=== %s ===\n", repoSpec)
-		}
-
 		// Parse owner/repo from repository spec
 		parts := strings.Split(repoSpec, "/")
 		if len(parts) != 2 {
@@ -376,21 +370,21 @@ func listPullRequests(args []string, authorFilter string, isKonflux bool) {
 		// Display results
 		if len(pullRequests) == 0 {
 			if isKonflux {
-				fmt.Printf("No Konflux pull requests found for %s\n", repoSpec)
+				fmt.Printf("\nNo Konflux pull requests found for %s\n", repoSpec)
 			} else {
-				fmt.Printf("No %s pull requests found for %s\n", state, repoSpec)
+				fmt.Printf("\nNo %s pull requests found for %s\n", state, repoSpec)
 			}
 			continue
 		}
 
-		if len(repositories) == 1 {
+		/*
 			// Single repository - show full header
 			if isKonflux {
-				fmt.Printf("Konflux pull requests for %s:\n\n", repoSpec)
+				fmt.Printf("\n=== %s: Konflux PRs ===\n\n", repoSpec)
 			} else {
-				fmt.Printf("Pull requests for %s:\n\n", repoSpec)
+				fmt.Printf("\n=== %s: PRs ===\n\n", repoSpec)
 			}
-		}
+		*/
 
 		// Handle approval if requested
 		if approve {
@@ -410,7 +404,11 @@ func listPullRequests(args []string, authorFilter string, isKonflux bool) {
 		}
 
 		// Display PR list in table format
-		_ = displayPRTable(pullRequests, owner, repo, client, isKonflux, nil)
+		if i == 0 {
+			_ = displayPRTable(pullRequests, owner, repo, client, isKonflux, true, nil)
+		} else {
+			_ = displayPRTable(pullRequests, owner, repo, client, isKonflux, false, nil)
+		}
 	}
 }
 
@@ -653,6 +651,8 @@ func approvePRsWithConfig(client api.RESTClient, owner, repo string, pullRequest
 	heldCount := 0
 	commentedCount := 0
 
+	shouldDisplayLegend := true
+
 	for {
 		// Filter out PRs that can't be approved (closed, draft, on hold) and already processed
 		var approvablePRs []PullRequest
@@ -683,7 +683,8 @@ func approvePRsWithConfig(client api.RESTClient, owner, repo string, pullRequest
 
 		// Display the PR table (excluding processed PRs)
 		fmt.Printf("═══════════════════════════════════════════════════════════════\n")
-		cache = displayPRTable(displayPRs, owner, repo, &client, config.IsKonflux, cache)
+		cache = displayPRTable(displayPRs, owner, repo, &client, config.IsKonflux, shouldDisplayLegend, cache)
+		shouldDisplayLegend = false // Only display legend once
 		fmt.Printf("═══════════════════════════════════════════════════════════════\n")
 
 		// Check if we have any approvable PRs left
@@ -1049,14 +1050,13 @@ func checkTektonFilesDetailed(client api.RESTClient, owner, repo string, prNumbe
 	return onlyTektonFiles, tektonFiles, nil
 }
 
-// hasMigrationWarning checks if a PR body contains migration warnings
+// hasMigrationWarning checks if a PR contains migration warnings
 func hasMigrationWarning(pr PullRequest) bool {
-	if pr.Body == "" {
-		return false
-	}
+	// Check for migration warning patterns in the PR body
+	// ⚠️[migration] or :warning:[migration] or ⚠️migration⚠️ or [migration]
+	bodyLower := strings.ToLower(pr.Body)
 
-	// Look for migration warning patterns in the PR body
-	// Common patterns: ⚠️[migration]..., :warning:[migration], ⚠️migration⚠️
+	// Look for various migration warning patterns
 	migrationPatterns := []string{
 		"⚠️[migration]",
 		":warning:[migration]",
@@ -1064,13 +1064,22 @@ func hasMigrationWarning(pr PullRequest) bool {
 		"[migration]",
 	}
 
-	body := strings.ToLower(pr.Body)
 	for _, pattern := range migrationPatterns {
-		if strings.Contains(body, strings.ToLower(pattern)) {
+		if strings.Contains(bodyLower, strings.ToLower(pattern)) {
 			return true
 		}
 	}
 
+	return false
+}
+
+// isKonfluxNudge checks if a PR has the "konflux-nudge" label
+func isKonfluxNudge(pr PullRequest) bool {
+	for _, label := range pr.Labels {
+		if label.Name == "konflux-nudge" {
+			return true
+		}
+	}
 	return false
 }
 
@@ -1781,11 +1790,12 @@ func PadString(s string, width int) string {
 
 // displayLegend shows what the various emojis and symbols mean in the table
 func displayLegend(isKonflux bool) {
-	fmt.Println("Legend:")
+	fmt.Println("\nLegend:")
 	fmt.Println("  Status: 🟢 open  🟡 draft  🔶 on hold  🔴 closed  🟣 merged")
 	fmt.Println("  Reviewed: ✅ approved  ❌ not approved")
 	fmt.Println("  Rebase: 🔄 needs rebase  - N/A (on hold)  (empty = up to date)")
 	fmt.Println("  Blocked: 🚫 blocked from merging  - N/A (on hold)  (empty = not blocked)")
+	fmt.Println("  Nudge: 👉 konflux nudge PR  (empty = not a nudge)")
 	if isKonflux {
 		fmt.Println("  Tekton: ✅ exclusively Tekton files  ❌ mixed/other files")
 		fmt.Println("  🚨 = migration warning")
@@ -1794,7 +1804,8 @@ func displayLegend(isKonflux bool) {
 }
 
 // displayPRTableWithCache displays PRs in a table format using an optional existing cache
-func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.RESTClient, isKonflux bool, cache *PRDetailsCache) *PRDetailsCache {
+func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.RESTClient, isKonflux bool,
+	shouldDisplayLegend bool, cache *PRDetailsCache) *PRDetailsCache {
 	// Use existing cache or create a new one
 	if cache == nil {
 		cache = NewPRDetailsCache()
@@ -1804,26 +1815,36 @@ func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.
 		return cache
 	}
 
-	// Display legend first
-	displayLegend(isKonflux)
+	// Display legend first if requested
+	if shouldDisplayLegend {
+		displayLegend(isKonflux)
+	}
+
+	// Display header
+	if isKonflux {
+		fmt.Printf("\n=== %s: Konflux PRs ===\n", repo)
+	} else {
+		fmt.Printf("\n=== %s: PRs ===\n", repo)
+	}
 
 	// Define column widths - compact but readable
 	const (
 		statusWidth   = 2  // Emoji width
 		prWidth       = 6  // "#1234"
-		titleWidth    = 41 // Shorter titles (reduced to fit blocked column)
-		authorWidth   = 16 // Author names (reduced to fit blocked column)
+		titleWidth    = 41 // Full title width
+		authorWidth   = 16 // Author names
 		branchWidth   = 14 // Source branch names
 		targetWidth   = 12 // Target branch names
 		stateWidth    = 10 // "STATUS"
 		reviewedWidth = 8  // "REVIEWED"
 		rebaseWidth   = 6  // "REBASE"
 		blockedWidth  = 7  // "BLOCKED"
+		nudgeWidth    = 5  // "NUDGE"
 		tektonWidth   = 6  // "TEKTON"
 	)
 
 	// Print table header
-	fmt.Printf("%s %s %s %s %s %s %s %s %s %s",
+	fmt.Printf("%s %s %s %s %s %s %s %s %s %s %s",
 		PadString("ST", statusWidth),
 		PadString("PR", prWidth),
 		PadString("TITLE", titleWidth),
@@ -1833,14 +1854,15 @@ func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.
 		PadString("STATUS", stateWidth),
 		PadString("REVIEWED", reviewedWidth),
 		PadString("REBASE", rebaseWidth),
-		PadString("BLOCKED", blockedWidth))
+		PadString("BLOCKED", blockedWidth),
+		PadString("NUDGE", nudgeWidth))
 	if isKonflux {
 		fmt.Printf(" %s", PadString("TEKTON", tektonWidth))
 	}
 	fmt.Printf("\n")
 
 	// Print separator line
-	fmt.Printf("%s %s %s %s %s %s %s %s %s %s",
+	fmt.Printf("%s %s %s %s %s %s %s %s %s %s %s",
 		PadString(strings.Repeat("-", statusWidth), statusWidth),
 		PadString(strings.Repeat("-", prWidth), prWidth),
 		PadString(strings.Repeat("-", titleWidth), titleWidth),
@@ -1850,7 +1872,8 @@ func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.
 		PadString(strings.Repeat("-", stateWidth), stateWidth),
 		PadString(strings.Repeat("-", reviewedWidth), reviewedWidth),
 		PadString(strings.Repeat("-", rebaseWidth), rebaseWidth),
-		PadString(strings.Repeat("-", blockedWidth), blockedWidth))
+		PadString(strings.Repeat("-", blockedWidth), blockedWidth),
+		PadString(strings.Repeat("-", nudgeWidth), nudgeWidth))
 	if isKonflux {
 		fmt.Printf(" %s", PadString(strings.Repeat("-", tektonWidth), tektonWidth))
 	}
@@ -1941,8 +1964,14 @@ func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.
 		}
 		// Leave empty if not blocked
 
+		// Determine nudge status
+		nudgeStatus := ""
+		if isKonfluxNudge(pr) {
+			nudgeStatus = "👉"
+		}
+
 		// Print the row with proper padding
-		fmt.Printf("%s %s %s %s %s %s %s %s %s %s",
+		fmt.Printf("%s %s %s %s %s %s %s %s %s %s %s",
 			PadString(icon, statusWidth),
 			PadString(prLink, prWidth),
 			PadString(title, titleWidth),
@@ -1952,7 +1981,8 @@ func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.
 			PadString(status, stateWidth),
 			PadString(reviewedStatus, reviewedWidth),
 			PadString(rebaseStatus, rebaseWidth),
-			PadString(blockedStatus, blockedWidth))
+			PadString(blockedStatus, blockedWidth),
+			PadString(nudgeStatus, nudgeWidth))
 
 		if isKonflux {
 			tektonStatus := ""
