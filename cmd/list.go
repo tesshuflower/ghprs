@@ -208,7 +208,7 @@ func promptForRepositorySelection(repositories []string) string {
 	fmt.Printf("  0. Cancel\n")
 
 	for {
-		fmt.Printf("\nSelect repository (1-%d, %d for all, 0 to cancel): ", len(repositories), len(repositories)+1)
+		fmt.Printf("\nSelect repository (1-%d, %d for all, 0 to cancel) [default: 1]: ", len(repositories), len(repositories)+1)
 
 		reader := bufio.NewReader(os.Stdin)
 		input, err := reader.ReadString('\n')
@@ -223,7 +223,8 @@ func promptForRepositorySelection(repositories []string) string {
 
 		input = strings.TrimSpace(input)
 		if input == "" {
-			continue
+			// Default to first repository
+			return repositories[0]
 		}
 
 		choice, err := strconv.Atoi(input)
