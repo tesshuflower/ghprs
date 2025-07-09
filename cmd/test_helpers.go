@@ -41,6 +41,10 @@ func HasMigrationWarningTest(pr PullRequest) bool {
 	return hasMigrationWarning(pr)
 }
 
+func IsKonfluxNudgeTest(pr PullRequest) bool {
+	return isKonfluxNudge(pr)
+}
+
 func NeedsRebaseTest(pr PullRequest) bool {
 	return needsRebase(pr)
 }
