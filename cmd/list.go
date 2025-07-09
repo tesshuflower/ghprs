@@ -305,13 +305,6 @@ func listPullRequests(args []string, authorFilter string, isKonflux bool) {
 
 	// Process each repository
 	for i, repoSpec := range repositories {
-		if len(repositories) > 1 {
-			if i > 0 {
-				fmt.Println() // Add spacing between repositories
-			}
-			fmt.Printf("=== %s ===\n", repoSpec)
-		}
-
 		// Parse owner/repo from repository spec
 		parts := strings.Split(repoSpec, "/")
 		if len(parts) != 2 {
@@ -377,21 +370,21 @@ func listPullRequests(args []string, authorFilter string, isKonflux bool) {
 		// Display results
 		if len(pullRequests) == 0 {
 			if isKonflux {
-				fmt.Printf("No Konflux pull requests found for %s\n", repoSpec)
+				fmt.Printf("\nNo Konflux pull requests found for %s\n", repoSpec)
 			} else {
-				fmt.Printf("No %s pull requests found for %s\n", state, repoSpec)
+				fmt.Printf("\nNo %s pull requests found for %s\n", state, repoSpec)
 			}
 			continue
 		}
 
-		if len(repositories) == 1 {
+		/*
 			// Single repository - show full header
 			if isKonflux {
-				fmt.Printf("Konflux pull requests for %s:\n\n", repoSpec)
+				fmt.Printf("\n=== %s: Konflux PRs ===\n\n", repoSpec)
 			} else {
-				fmt.Printf("Pull requests for %s:\n\n", repoSpec)
+				fmt.Printf("\n=== %s: PRs ===\n\n", repoSpec)
 			}
-		}
+		*/
 
 		// Handle approval if requested
 		if approve {
@@ -411,7 +404,11 @@ func listPullRequests(args []string, authorFilter string, isKonflux bool) {
 		}
 
 		// Display PR list in table format
-		_ = displayPRTable(pullRequests, owner, repo, client, isKonflux, nil)
+		if i == 0 {
+			_ = displayPRTable(pullRequests, owner, repo, client, isKonflux, true, nil)
+		} else {
+			_ = displayPRTable(pullRequests, owner, repo, client, isKonflux, false, nil)
+		}
 	}
 }
 
@@ -654,6 +651,8 @@ func approvePRsWithConfig(client api.RESTClient, owner, repo string, pullRequest
 	heldCount := 0
 	commentedCount := 0
 
+	shouldDisplayLegend := true
+
 	for {
 		// Filter out PRs that can't be approved (closed, draft, on hold) and already processed
 		var approvablePRs []PullRequest
@@ -684,7 +683,8 @@ func approvePRsWithConfig(client api.RESTClient, owner, repo string, pullRequest
 
 		// Display the PR table (excluding processed PRs)
 		fmt.Printf("═══════════════════════════════════════════════════════════════\n")
-		cache = displayPRTable(displayPRs, owner, repo, &client, config.IsKonflux, cache)
+		cache = displayPRTable(displayPRs, owner, repo, &client, config.IsKonflux, shouldDisplayLegend, cache)
+		shouldDisplayLegend = false // Only display legend once
 		fmt.Printf("═══════════════════════════════════════════════════════════════\n")
 
 		// Check if we have any approvable PRs left
@@ -1790,7 +1790,7 @@ func PadString(s string, width int) string {
 
 // displayLegend shows what the various emojis and symbols mean in the table
 func displayLegend(isKonflux bool) {
-	fmt.Println("Legend:")
+	fmt.Println("\nLegend:")
 	fmt.Println("  Status: 🟢 open  🟡 draft  🔶 on hold  🔴 closed  🟣 merged")
 	fmt.Println("  Reviewed: ✅ approved  ❌ not approved")
 	fmt.Println("  Rebase: 🔄 needs rebase  - N/A (on hold)  (empty = up to date)")
@@ -1804,7 +1804,8 @@ func displayLegend(isKonflux bool) {
 }
 
 // displayPRTableWithCache displays PRs in a table format using an optional existing cache
-func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.RESTClient, isKonflux bool, cache *PRDetailsCache) *PRDetailsCache {
+func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.RESTClient, isKonflux bool,
+	shouldDisplayLegend bool, cache *PRDetailsCache) *PRDetailsCache {
 	// Use existing cache or create a new one
 	if cache == nil {
 		cache = NewPRDetailsCache()
@@ -1814,8 +1815,17 @@ func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.
 		return cache
 	}
 
-	// Display legend first
-	displayLegend(isKonflux)
+	// Display legend first if requested
+	if shouldDisplayLegend {
+		displayLegend(isKonflux)
+	}
+
+	// Display header
+	if isKonflux {
+		fmt.Printf("\n=== %s: Konflux PRs ===\n", repo)
+	} else {
+		fmt.Printf("\n=== %s: PRs ===\n", repo)
+	}
 
 	// Define column widths - compact but readable
 	const (
