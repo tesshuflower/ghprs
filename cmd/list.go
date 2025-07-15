@@ -477,21 +477,19 @@ func promptForApprovalWithCache(pr PullRequest, owner, repo string, client api.R
 	}
 
 	// Konflux-specific checks
-	if config.IsKonflux {
-		// Check for Tekton files
-		onlyTektonFiles, tektonFiles, err := checkTektonFilesDetailed(client, owner, repo, pr.Number)
-		if err != nil {
-			fmt.Printf("   ⚠️  Could not check Tekton files: %v\n", err)
-		} else if onlyTektonFiles {
-			fmt.Printf("   ✅ ONLY modifies Tekton files: %s\n", strings.Join(tektonFiles, ", "))
-		} else {
-			fmt.Printf("   ❌ Does NOT exclusively modify target Tekton files\n")
-		}
+	// Check for Tekton files
+	onlyTektonFiles, tektonFiles, err := checkTektonFilesDetailed(client, owner, repo, pr.Number)
+	if err != nil {
+		fmt.Printf("   ⚠️  Could not check Tekton files: %v\n", err)
+	} else if onlyTektonFiles {
+		fmt.Printf("   ✅ ONLY modifies Tekton files: %s\n", strings.Join(tektonFiles, ", "))
+	} else {
+		fmt.Printf("   ❌ Does NOT exclusively modify target Tekton files\n")
+	}
 
-		// Check for migration warnings
-		if hasMigrationWarning(pr) {
-			fmt.Printf("   🚨 MIGRATION WARNING: This PR contains migration notes - review carefully!\n")
-		}
+	// Check for migration warnings
+	if hasMigrationWarning(pr) {
+		fmt.Printf("   🚨 MIGRATION WARNING: This PR contains migration notes - review carefully!\n")
 	}
 
 	// Show hold status if applicable
@@ -1894,10 +1892,7 @@ func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.
 		}
 
 		// Check for migration warnings
-		hasMigration := false
-		if isKonflux {
-			hasMigration = hasMigrationWarning(pr)
-		}
+		hasMigration := hasMigrationWarning(pr)
 
 		// Skip PRs that don't exclusively modify Tekton files if --tekton-only flag is set
 		if tektonOnly && !onlyTektonFiles {
