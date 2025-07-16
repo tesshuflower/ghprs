@@ -129,6 +129,7 @@ var (
 	current       bool
 	tektonOnly    bool
 	migrationOnly bool
+	securityOnly  bool
 	sortBy        string
 	showFiles     bool
 	showDiff      bool
@@ -153,6 +154,7 @@ Examples:
   ghprs list --current                       # Force use current repo, bypass config
   ghprs list --sort-by oldest               # Show oldest PRs first
   ghprs list --sort-by updated               # Sort by last update
+  ghprs list --security-only                # Show only security/CVE PRs
   ghprs list --approve                       # Interactively approve PRs (review + /lgtm comment)
   ghprs list --approve --show-files          # Approve with detailed file lists
   ghprs list --approve --show-diff           # Approve with detailed diff display
@@ -181,7 +183,8 @@ Examples:
   ghprs konflux --approve                    # Interactively approve Konflux PRs (review + /lgtm comment)
   ghprs konflux --tekton-only                # Show only PRs that EXCLUSIVELY modify Tekton files
   ghprs konflux --migration-only             # Show only PRs with migration warnings
-  ghprs konflux --sort-by priority           # Sort by priority (migration warnings first)
+  ghprs konflux --security-only              # Show only security/CVE PRs
+  ghprs konflux --sort-by priority           # Sort by priority (security updates first, then migration warnings)
   ghprs konflux --sort-by oldest             # Show oldest PRs first
   ghprs konflux --approve --show-files       # Approve with detailed file lists
   ghprs konflux --approve --show-diff        # Approve with detailed diff display
@@ -1071,6 +1074,12 @@ func hasMigrationWarning(pr PullRequest) bool {
 	return false
 }
 
+// hasSecurity checks if a PR is a security update based on its title
+func hasSecurity(pr PullRequest) bool {
+	titleUpper := strings.ToUpper(pr.Title)
+	return strings.Contains(titleUpper, "SECURITY") || strings.Contains(titleUpper, "CVE")
+}
+
 // isKonfluxNudge checks if a PR has the "konflux-nudge" label
 func isKonfluxNudge(pr PullRequest) bool {
 	for _, label := range pr.Labels {
@@ -1403,12 +1412,22 @@ func sortPullRequests(prs []PullRequest, sortBy string) {
 			return prs[i].Number < prs[j].Number
 		})
 	case "priority":
-		// Custom priority sorting: migration warnings first, then others by creation date
+		// Custom priority sorting: security updates first, then migration warnings, then others by creation date
 		sort.Slice(prs, func(i, j int) bool {
+			iSecurity := hasSecurity(prs[i])
+			jSecurity := hasSecurity(prs[j])
 			iMigration := hasMigrationWarning(prs[i])
 			jMigration := hasMigrationWarning(prs[j])
 
-			// Migration warnings have highest priority
+			// Security updates have highest priority
+			if iSecurity && !jSecurity {
+				return true
+			}
+			if !iSecurity && jSecurity {
+				return false
+			}
+
+			// If both have same security status, migration warnings come next
 			if iMigration && !jMigration {
 				return true
 			}
@@ -1416,7 +1435,7 @@ func sortPullRequests(prs []PullRequest, sortBy string) {
 				return false
 			}
 
-			// If both have same migration status, sort by creation date (newest first)
+			// If both have same security and migration status, sort by creation date (newest first)
 			return prs[i].CreatedAt > prs[j].CreatedAt
 		})
 	case "newest":
@@ -1437,6 +1456,7 @@ func sortPullRequestsWithContext(prs []PullRequest, client api.RESTClient, owner
 	// Create a slice of PR info with additional context
 	type prInfo struct {
 		pr              PullRequest
+		hasSecurity     bool
 		hasMigration    bool
 		onlyTektonFiles bool
 	}
@@ -1445,6 +1465,7 @@ func sortPullRequestsWithContext(prs []PullRequest, client api.RESTClient, owner
 	for _, pr := range prs {
 		info := prInfo{
 			pr:           pr,
+			hasSecurity:  hasSecurity(pr),
 			hasMigration: hasMigrationWarning(pr),
 		}
 
@@ -1457,12 +1478,20 @@ func sortPullRequestsWithContext(prs []PullRequest, client api.RESTClient, owner
 		prInfos = append(prInfos, info)
 	}
 
-	// Sort by priority: migration warnings first, then Tekton-only, then others
+	// Sort by priority: security updates first, then migration warnings, then Tekton-only, then others
 	sort.Slice(prInfos, func(i, j int) bool {
 		iInfo := prInfos[i]
 		jInfo := prInfos[j]
 
-		// 1. Migration warnings have highest priority
+		// 1. Security updates have highest priority
+		if iInfo.hasSecurity && !jInfo.hasSecurity {
+			return true
+		}
+		if !iInfo.hasSecurity && jInfo.hasSecurity {
+			return false
+		}
+
+		// 2. If both have same security status, migration warnings come next
 		if iInfo.hasMigration && !jInfo.hasMigration {
 			return true
 		}
@@ -1470,7 +1499,7 @@ func sortPullRequestsWithContext(prs []PullRequest, client api.RESTClient, owner
 			return false
 		}
 
-		// 2. If both have same migration status, Tekton-only PRs come next
+		// 3. If both have same security and migration status, Tekton-only PRs come next
 		if iInfo.onlyTektonFiles && !jInfo.onlyTektonFiles {
 			return true
 		}
@@ -1478,7 +1507,7 @@ func sortPullRequestsWithContext(prs []PullRequest, client api.RESTClient, owner
 			return false
 		}
 
-		// 3. If both have same migration and Tekton status, sort by creation date (newest first)
+		// 4. If both have same security, migration, and Tekton status, sort by creation date (newest first)
 		return iInfo.pr.CreatedAt > jInfo.pr.CreatedAt
 	})
 
@@ -1794,6 +1823,7 @@ func displayLegend(isKonflux bool) {
 	fmt.Println("  Rebase: 🔄 needs rebase  - N/A (on hold)  (empty = up to date)")
 	fmt.Println("  Blocked: 🚫 blocked from merging  - N/A (on hold)  (empty = not blocked)")
 	fmt.Println("  Nudge: 👉 konflux nudge PR  (empty = not a nudge)")
+	fmt.Println("  Security: 🔒 security/CVE update  (empty = not security)")
 	if isKonflux {
 		fmt.Println("  Tekton: ✅ exclusively Tekton files  ❌ mixed/other files")
 		fmt.Println("  🚨 = migration warning")
@@ -1838,11 +1868,12 @@ func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.
 		rebaseWidth   = 6  // "REBASE"
 		blockedWidth  = 7  // "BLOCKED"
 		nudgeWidth    = 5  // "NUDGE"
+		securityWidth = 8  // "SECURITY"
 		tektonWidth   = 6  // "TEKTON"
 	)
 
 	// Print table header
-	fmt.Printf("%s %s %s %s %s %s %s %s %s %s %s",
+	fmt.Printf("%s %s %s %s %s %s %s %s %s %s %s %s",
 		PadString("ST", statusWidth),
 		PadString("PR", prWidth),
 		PadString("TITLE", titleWidth),
@@ -1853,14 +1884,15 @@ func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.
 		PadString("REVIEWED", reviewedWidth),
 		PadString("REBASE", rebaseWidth),
 		PadString("BLOCKED", blockedWidth),
-		PadString("NUDGE", nudgeWidth))
+		PadString("NUDGE", nudgeWidth),
+		PadString("SECURITY", securityWidth))
 	if isKonflux {
 		fmt.Printf(" %s", PadString("TEKTON", tektonWidth))
 	}
 	fmt.Printf("\n")
 
 	// Print separator line
-	fmt.Printf("%s %s %s %s %s %s %s %s %s %s %s",
+	fmt.Printf("%s %s %s %s %s %s %s %s %s %s %s %s",
 		PadString(strings.Repeat("-", statusWidth), statusWidth),
 		PadString(strings.Repeat("-", prWidth), prWidth),
 		PadString(strings.Repeat("-", titleWidth), titleWidth),
@@ -1871,7 +1903,8 @@ func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.
 		PadString(strings.Repeat("-", reviewedWidth), reviewedWidth),
 		PadString(strings.Repeat("-", rebaseWidth), rebaseWidth),
 		PadString(strings.Repeat("-", blockedWidth), blockedWidth),
-		PadString(strings.Repeat("-", nudgeWidth), nudgeWidth))
+		PadString(strings.Repeat("-", nudgeWidth), nudgeWidth),
+		PadString(strings.Repeat("-", securityWidth), securityWidth))
 	if isKonflux {
 		fmt.Printf(" %s", PadString(strings.Repeat("-", tektonWidth), tektonWidth))
 	}
@@ -1901,6 +1934,11 @@ func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.
 
 		// Skip PRs that don't have migration warnings if --migration-only flag is set
 		if migrationOnly && !hasMigration {
+			continue
+		}
+
+		// Skip PRs that don't have security updates if --security-only flag is set
+		if securityOnly && !hasSecurity(pr) {
 			continue
 		}
 
@@ -1965,8 +2003,14 @@ func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.
 			nudgeStatus = "👉"
 		}
 
+		// Determine security status
+		securityStatus := ""
+		if hasSecurity(pr) {
+			securityStatus = "🔒"
+		}
+
 		// Print the row with proper padding
-		fmt.Printf("%s %s %s %s %s %s %s %s %s %s %s",
+		fmt.Printf("%s %s %s %s %s %s %s %s %s %s %s %s",
 			PadString(icon, statusWidth),
 			PadString(prLink, prWidth),
 			PadString(title, titleWidth),
@@ -1977,7 +2021,8 @@ func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.
 			PadString(reviewedStatus, reviewedWidth),
 			PadString(rebaseStatus, rebaseWidth),
 			PadString(blockedStatus, blockedWidth),
-			PadString(nudgeStatus, nudgeWidth))
+			PadString(nudgeStatus, nudgeWidth),
+			PadString(securityStatus, securityWidth))
 
 		if isKonflux {
 			tektonStatus := ""
@@ -2004,8 +2049,9 @@ func init() {
 	listCmd.Flags().StringVarP(&state, "state", "s", "open", "Filter by state: open, closed, all")
 	listCmd.Flags().IntVarP(&limit, "limit", "l", 30, "Maximum number of pull requests to show")
 	listCmd.Flags().BoolVarP(&current, "current", "c", false, "Use current repository, bypass config")
-	listCmd.Flags().StringVar(&sortBy, "sort-by", "", "Sort PRs by: newest (default), oldest, updated, number, priority")
+	listCmd.Flags().StringVar(&sortBy, "sort-by", "", "Sort PRs by: newest (default), oldest, updated, number, priority (security updates first)")
 	listCmd.Flags().BoolVarP(&approve, "approve", "a", false, "Interactively approve pull requests (review + /lgtm comment)")
+	listCmd.Flags().BoolVarP(&securityOnly, "security-only", "", false, "Show only PRs that contain security updates (SECURITY or CVE in title)")
 	listCmd.Flags().BoolVarP(&showFiles, "show-files", "f", false, "Show detailed file list during approval process")
 	listCmd.Flags().BoolVarP(&showDiff, "show-diff", "d", false, "Show detailed diff during approval process")
 	listCmd.Flags().BoolVar(&noColor, "no-color", false, "Disable color output in diff display")
@@ -2016,7 +2062,8 @@ func init() {
 	konfluxCmd.Flags().BoolVarP(&approve, "approve", "a", false, "Interactively approve Konflux pull requests (review + /lgtm comment)")
 	konfluxCmd.Flags().BoolVarP(&tektonOnly, "tekton-only", "t", false, "Show only PRs that EXCLUSIVELY modify Tekton files (.tekton/*-pull-request.yaml or *-push.yaml)")
 	konfluxCmd.Flags().BoolVarP(&migrationOnly, "migration-only", "m", false, "Show only PRs that contain migration warnings")
-	konfluxCmd.Flags().StringVar(&sortBy, "sort-by", "", "Sort PRs by: newest (default), oldest, updated, number, priority")
+	konfluxCmd.Flags().BoolVarP(&securityOnly, "security-only", "", false, "Show only PRs that contain security updates (SECURITY or CVE in title)")
+	konfluxCmd.Flags().StringVar(&sortBy, "sort-by", "", "Sort PRs by: newest (default), oldest, updated, number, priority (security updates first)")
 	konfluxCmd.Flags().BoolVarP(&showFiles, "show-files", "f", false, "Show detailed file list during approval process")
 	konfluxCmd.Flags().BoolVarP(&showDiff, "show-diff", "d", false, "Show detailed diff during approval process")
 	konfluxCmd.Flags().BoolVar(&noColor, "no-color", false, "Disable color output in diff display")
