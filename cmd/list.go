@@ -129,6 +129,7 @@ var (
 	current       bool
 	tektonOnly    bool
 	migrationOnly bool
+	securityOnly  bool
 	sortBy        string
 	showFiles     bool
 	showDiff      bool
@@ -153,6 +154,7 @@ Examples:
   ghprs list --current                       # Force use current repo, bypass config
   ghprs list --sort-by oldest               # Show oldest PRs first
   ghprs list --sort-by updated               # Sort by last update
+  ghprs list --security-only                # Show only security/CVE PRs
   ghprs list --approve                       # Interactively approve PRs (review + /lgtm comment)
   ghprs list --approve --show-files          # Approve with detailed file lists
   ghprs list --approve --show-diff           # Approve with detailed diff display
@@ -181,6 +183,7 @@ Examples:
   ghprs konflux --approve                    # Interactively approve Konflux PRs (review + /lgtm comment)
   ghprs konflux --tekton-only                # Show only PRs that EXCLUSIVELY modify Tekton files
   ghprs konflux --migration-only             # Show only PRs with migration warnings
+  ghprs konflux --security-only              # Show only security/CVE PRs
   ghprs konflux --sort-by priority           # Sort by priority (security updates first, then migration warnings)
   ghprs konflux --sort-by oldest             # Show oldest PRs first
   ghprs konflux --approve --show-files       # Approve with detailed file lists
@@ -1934,6 +1937,11 @@ func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.
 			continue
 		}
 
+		// Skip PRs that don't have security updates if --security-only flag is set
+		if securityOnly && !hasSecurity(pr) {
+			continue
+		}
+
 		// Get status icon
 		var icon string
 		if isKonflux {
@@ -2043,6 +2051,7 @@ func init() {
 	listCmd.Flags().BoolVarP(&current, "current", "c", false, "Use current repository, bypass config")
 	listCmd.Flags().StringVar(&sortBy, "sort-by", "", "Sort PRs by: newest (default), oldest, updated, number, priority (security updates first)")
 	listCmd.Flags().BoolVarP(&approve, "approve", "a", false, "Interactively approve pull requests (review + /lgtm comment)")
+	listCmd.Flags().BoolVarP(&securityOnly, "security-only", "", false, "Show only PRs that contain security updates (SECURITY or CVE in title)")
 	listCmd.Flags().BoolVarP(&showFiles, "show-files", "f", false, "Show detailed file list during approval process")
 	listCmd.Flags().BoolVarP(&showDiff, "show-diff", "d", false, "Show detailed diff during approval process")
 	listCmd.Flags().BoolVar(&noColor, "no-color", false, "Disable color output in diff display")
@@ -2053,6 +2062,7 @@ func init() {
 	konfluxCmd.Flags().BoolVarP(&approve, "approve", "a", false, "Interactively approve Konflux pull requests (review + /lgtm comment)")
 	konfluxCmd.Flags().BoolVarP(&tektonOnly, "tekton-only", "t", false, "Show only PRs that EXCLUSIVELY modify Tekton files (.tekton/*-pull-request.yaml or *-push.yaml)")
 	konfluxCmd.Flags().BoolVarP(&migrationOnly, "migration-only", "m", false, "Show only PRs that contain migration warnings")
+	konfluxCmd.Flags().BoolVarP(&securityOnly, "security-only", "", false, "Show only PRs that contain security updates (SECURITY or CVE in title)")
 	konfluxCmd.Flags().StringVar(&sortBy, "sort-by", "", "Sort PRs by: newest (default), oldest, updated, number, priority (security updates first)")
 	konfluxCmd.Flags().BoolVarP(&showFiles, "show-files", "f", false, "Show detailed file list during approval process")
 	konfluxCmd.Flags().BoolVarP(&showDiff, "show-diff", "d", false, "Show detailed diff during approval process")
