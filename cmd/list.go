@@ -440,13 +440,13 @@ func promptForApprovalWithCache(pr PullRequest, owner, repo string, client api.R
 	}
 
 	// Show rebase status - fetch full details if needed
-	if needsRebaseWithCache(cache, client, owner, repo, pr) {
+	if needsRebase, hasState := needsRebaseWithCache(cache, client, owner, repo, pr); hasState && needsRebase {
 		fmt.Printf("   🔄 Rebase needed: PR is behind the target branch or has conflicts\n")
 	}
 	// Only show if there's an issue, otherwise it's assumed to be up to date
 
 	// Show blocked status - fetch full details if needed
-	if isBlockedWithCache(cache, client, owner, repo, pr) {
+	if isBlocked, hasState := isBlockedWithCache(cache, client, owner, repo, pr); hasState && isBlocked {
 		fmt.Printf("   🚫 Blocked: PR is blocked from merging (failed checks, missing reviews, etc.)\n")
 	}
 	// Only show if blocked, otherwise it's assumed to be ready for merge
@@ -959,6 +959,7 @@ func (c *PRDetailsCache) GetOrFetch(client api.RESTClient, owner, repo string, p
 	err := client.Get(prPath, &pr)
 	if err != nil {
 		// If we can't fetch details, cache the original PR to avoid retrying
+		// Note: This is often due to rate limiting or permissions
 		c.cache[prNumber] = &originalPR
 		return &originalPR
 	}
@@ -980,15 +981,23 @@ func fetchPRDetails(client api.RESTClient, owner, repo string, prNumber int) (*P
 }
 
 // needsRebaseWithCache checks if a PR needs a rebase using cached details
-func needsRebaseWithCache(cache *PRDetailsCache, client api.RESTClient, owner, repo string, pr PullRequest) bool {
+func needsRebaseWithCache(cache *PRDetailsCache, client api.RESTClient, owner, repo string, pr PullRequest) (bool, bool) {
 	fullPR := cache.GetOrFetch(client, owner, repo, pr.Number, pr)
-	return needsRebase(*fullPR)
+	// Return (needsRebase, hasValidState)
+	if fullPR.MergeableState == "" {
+		return false, false // Unknown state
+	}
+	return needsRebase(*fullPR), true
 }
 
 // isBlockedWithCache checks if a PR is blocked using cached details
-func isBlockedWithCache(cache *PRDetailsCache, client api.RESTClient, owner, repo string, pr PullRequest) bool {
+func isBlockedWithCache(cache *PRDetailsCache, client api.RESTClient, owner, repo string, pr PullRequest) (bool, bool) {
 	fullPR := cache.GetOrFetch(client, owner, repo, pr.Number, pr)
-	return isBlocked(*fullPR)
+	// Return (isBlocked, hasValidState)
+	if fullPR.MergeableState == "" {
+		return false, false // Unknown state
+	}
+	return isBlocked(*fullPR), true
 }
 
 // isReviewed checks if a PR has any approved reviews or approved/lgtm labels
@@ -1820,8 +1829,8 @@ func displayLegend(isKonflux bool) {
 	fmt.Println("\nLegend:")
 	fmt.Println("  Status: 🟢 open  🟡 draft  🔶 on hold  🔴 closed  🟣 merged")
 	fmt.Println("  Reviewed: ✅ approved  ❌ not approved")
-	fmt.Println("  Rebase: 🔄 needs rebase  - N/A (on hold)  (empty = up to date)")
-	fmt.Println("  Blocked: 🚫 blocked from merging  - N/A (on hold)  (empty = not blocked)")
+	fmt.Println("  Rebase: 🔄 needs rebase  ? unknown  (empty = up to date)")
+	fmt.Println("  Blocked: 🚫 blocked from merging  ? unknown  (empty = not blocked)")
 	fmt.Println("  Nudge: 👉 konflux nudge PR  (empty = not a nudge)")
 	fmt.Println("  Security: 🔒 security/CVE update  (empty = not security)")
 	if isKonflux {
@@ -1979,23 +1988,25 @@ func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.
 			reviewedStatus = "❌"
 		}
 
-		// Determine rebase status - skip API call if PR is on hold
+		// Determine rebase status
 		rebaseStatus := ""
-		if isOnHold(pr) {
-			rebaseStatus = "-" // N/A for PRs on hold
-		} else if needsRebaseWithCache(cache, *client, owner, repo, pr) {
+		needsRebase, hasState := needsRebaseWithCache(cache, *client, owner, repo, pr)
+		if !hasState {
+			rebaseStatus = "?" // Unknown state (API limit/error)
+		} else if needsRebase {
 			rebaseStatus = "🔄"
 		}
-		// Leave empty if no rebase needed
+		// Leave empty if no rebase needed and state is valid
 
-		// Determine blocked status - skip API call if PR is on hold
+		// Determine blocked status
 		blockedStatus := ""
-		if isOnHold(pr) {
-			blockedStatus = "-" // N/A for PRs on hold
-		} else if isBlockedWithCache(cache, *client, owner, repo, pr) {
+		isBlocked, hasState := isBlockedWithCache(cache, *client, owner, repo, pr)
+		if !hasState {
+			blockedStatus = "?" // Unknown state (API limit/error)
+		} else if isBlocked {
 			blockedStatus = "🚫"
 		}
-		// Leave empty if not blocked
+		// Leave empty if not blocked and state is valid
 
 		// Determine nudge status
 		nudgeStatus := ""
