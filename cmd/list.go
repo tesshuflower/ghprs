@@ -946,13 +946,17 @@ func NewPRDetailsCache() *PRDetailsCache {
 // on the first API call, but becomes available on subsequent calls
 func (c *PRDetailsCache) GetOrFetch(client api.RESTClient, owner, repo string, prNumber int, originalPR PullRequest) *PullRequest {
 	// If the original PR already has mergeable_state populated, use it
-	if originalPR.MergeableState != "" {
+	mergeableState := strings.TrimSpace(originalPR.MergeableState)
+	if mergeableState != "" && mergeableState != "unknown" {
 		return &originalPR
 	}
 
 	// Check cache first, but only use if it has valid mergeable_state
-	if cachedPR, exists := c.cache[prNumber]; exists && cachedPR.MergeableState != "" {
-		return cachedPR
+	if cachedPR, exists := c.cache[prNumber]; exists {
+		cachedState := strings.TrimSpace(cachedPR.MergeableState)
+		if cachedState != "" && cachedState != "unknown" {
+			return cachedPR
+		}
 	}
 
 	// Fetch from API and cache the result
@@ -968,7 +972,8 @@ func (c *PRDetailsCache) GetOrFetch(client api.RESTClient, owner, repo string, p
 
 	// Only cache if we have a valid mergeable_state
 	// GitHub computes this asynchronously, so it might not be ready on first call
-	if pr.MergeableState != "" {
+	prState := strings.TrimSpace(pr.MergeableState)
+	if prState != "" && prState != "unknown" {
 		c.cache[prNumber] = &pr
 	}
 	return &pr
@@ -989,7 +994,9 @@ func fetchPRDetails(client api.RESTClient, owner, repo string, prNumber int) (*P
 func needsRebaseWithCache(cache *PRDetailsCache, client api.RESTClient, owner, repo string, pr PullRequest) (bool, bool) {
 	fullPR := cache.GetOrFetch(client, owner, repo, pr.Number, pr)
 	// Return (needsRebase, hasValidState)
-	if fullPR.MergeableState == "" {
+	// Check for empty, whitespace-only, or common GitHub unknown states
+	mergeableState := strings.TrimSpace(fullPR.MergeableState)
+	if mergeableState == "" || mergeableState == "unknown" {
 		return false, false // Unknown state
 	}
 	return needsRebase(*fullPR), true
@@ -999,7 +1006,9 @@ func needsRebaseWithCache(cache *PRDetailsCache, client api.RESTClient, owner, r
 func isBlockedWithCache(cache *PRDetailsCache, client api.RESTClient, owner, repo string, pr PullRequest) (bool, bool) {
 	fullPR := cache.GetOrFetch(client, owner, repo, pr.Number, pr)
 	// Return (isBlocked, hasValidState)
-	if fullPR.MergeableState == "" {
+	// Check for empty, whitespace-only, or common GitHub unknown states
+	mergeableState := strings.TrimSpace(fullPR.MergeableState)
+	if mergeableState == "" || mergeableState == "unknown" {
 		return false, false // Unknown state
 	}
 	return isBlocked(*fullPR), true
