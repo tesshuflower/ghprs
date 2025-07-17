@@ -942,14 +942,16 @@ func NewPRDetailsCache() *PRDetailsCache {
 }
 
 // GetOrFetch gets PR details from cache or fetches them if not cached
+// Note: GitHub's mergeable_state is computed asynchronously and may not be available
+// on the first API call, but becomes available on subsequent calls
 func (c *PRDetailsCache) GetOrFetch(client api.RESTClient, owner, repo string, prNumber int, originalPR PullRequest) *PullRequest {
 	// If the original PR already has mergeable_state populated, use it
 	if originalPR.MergeableState != "" {
 		return &originalPR
 	}
 
-	// Check cache first
-	if cachedPR, exists := c.cache[prNumber]; exists {
+	// Check cache first, but only use if it has valid mergeable_state
+	if cachedPR, exists := c.cache[prNumber]; exists && cachedPR.MergeableState != "" {
 		return cachedPR
 	}
 
@@ -964,8 +966,11 @@ func (c *PRDetailsCache) GetOrFetch(client api.RESTClient, owner, repo string, p
 		return &originalPR
 	}
 
-	// Cache the fetched PR details
-	c.cache[prNumber] = &pr
+	// Only cache if we have a valid mergeable_state
+	// GitHub computes this asynchronously, so it might not be ready on first call
+	if pr.MergeableState != "" {
+		c.cache[prNumber] = &pr
+	}
 	return &pr
 }
 
