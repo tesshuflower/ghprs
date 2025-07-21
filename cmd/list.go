@@ -1299,7 +1299,7 @@ func displayDetailedCheckStatus(client api.RESTClient, owner, repo string, prNum
 	fmt.Printf("\n")
 }
 
-// holdPR puts a PR on hold by commenting /hold and adding the "needs-ok-to-test" label
+// holdPR puts a PR on hold by commenting /hold, adding the "needs-ok-to-test" label, and removing "ok-to-test" label if present
 func holdPR(client api.RESTClient, owner, repo string, prNumber int, additionalComment string) error {
 	// Build the comment body
 	commentBody := "/hold"
@@ -1337,6 +1337,15 @@ func holdPR(client api.RESTClient, owner, repo string, prNumber int, additionalC
 	err = client.Post(labelPath, bytes.NewReader(labelJSON), nil)
 	if err != nil {
 		return fmt.Errorf("failed to add label: %v", err)
+	}
+
+	// Remove the "ok-to-test" label if it exists
+	removeLabelPath := fmt.Sprintf("repos/%s/%s/issues/%d/labels/ok-to-test", owner, repo, prNumber)
+	err = client.Delete(removeLabelPath, nil)
+	if err != nil {
+		// Don't fail the whole operation if the label doesn't exist or can't be removed
+		// This is common when the label wasn't present in the first place
+		fmt.Printf("Note: Could not remove 'ok-to-test' label (may not exist): %v\n", err)
 	}
 
 	return nil
