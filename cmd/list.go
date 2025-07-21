@@ -134,6 +134,7 @@ var (
 	showFiles     bool
 	showDiff      bool
 	noColor       bool
+	fastMode      bool
 )
 
 // listCmd represents the list command
@@ -155,6 +156,7 @@ Examples:
   ghprs list --sort-by oldest               # Show oldest PRs first
   ghprs list --sort-by updated               # Sort by last update
   ghprs list --security-only                # Show only security/CVE PRs
+  ghprs list --fast                         # Fast mode: skip expensive API calls for quick display
   ghprs list --approve                       # Interactively approve PRs (review + /lgtm comment)
   ghprs list --approve --show-files          # Approve with detailed file lists
   ghprs list --approve --show-diff           # Approve with detailed diff display
@@ -184,6 +186,7 @@ Examples:
   ghprs konflux --tekton-only                # Show only PRs that EXCLUSIVELY modify Tekton files
   ghprs konflux --migration-only             # Show only PRs with migration warnings
   ghprs konflux --security-only              # Show only security/CVE PRs
+  ghprs konflux --fast                       # Fast mode: skip expensive API calls for quick display
   ghprs konflux --sort-by priority           # Sort by priority (security updates first, then migration warnings)
   ghprs konflux --sort-by oldest             # Show oldest PRs first
   ghprs konflux --approve --show-files       # Approve with detailed file lists
@@ -1103,6 +1106,16 @@ func hasSecurity(pr PullRequest) bool {
 	return strings.Contains(titleUpper, "SECURITY") || strings.Contains(titleUpper, "CVE")
 }
 
+// hasApprovedLabel checks if a PR has approved/lgtm labels (fast check without API calls)
+func hasApprovedLabel(labels []Label) bool {
+	for _, label := range labels {
+		if label.Name == "approved" || label.Name == "lgtm" {
+			return true
+		}
+	}
+	return false
+}
+
 // isKonfluxNudge checks if a PR has the "konflux-nudge" label
 func isKonfluxNudge(pr PullRequest) bool {
 	for _, label := range pr.Labels {
@@ -1851,13 +1864,13 @@ func PadString(s string, width int) string {
 func displayLegend(isKonflux bool) {
 	fmt.Println("\nLegend:")
 	fmt.Println("  Status: 🟢 open  🟡 draft  🔶 on hold  🔴 closed  🟣 merged")
-	fmt.Println("  Reviewed: ✅ approved  ❌ not approved")
-	fmt.Println("  Rebase: 🔄 needs rebase  ? unknown  (empty = up to date)")
-	fmt.Println("  Blocked: 🚫 blocked from merging  ? unknown  (empty = not blocked)")
+	fmt.Println("  Reviewed: ✅ approved  ❌ not approved  - labels only (fast mode)")
+	fmt.Println("  Rebase: 🔄 needs rebase  ? unknown  - skipped (fast mode)  (empty = up to date)")
+	fmt.Println("  Blocked: 🚫 blocked from merging  ? unknown  - skipped (fast mode)  (empty = not blocked)")
 	fmt.Println("  Nudge: 👉 konflux nudge PR  (empty = not a nudge)")
 	fmt.Println("  Security: 🔒 security/CVE update  (empty = not security)")
 	if isKonflux {
-		fmt.Println("  Tekton: ✅ exclusively Tekton files  ❌ mixed/other files")
+		fmt.Println("  Tekton: ✅ exclusively Tekton files  ❌ mixed/other files  - skipped (fast mode)")
 		fmt.Println("  🚨 = migration warning")
 	}
 	fmt.Println()
@@ -1944,9 +1957,9 @@ func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.
 
 	// Display each PR as a table row
 	for _, pr := range pullRequests {
-		// Check for Tekton files if this is a Konflux PR
+		// Check for Tekton files if this is a Konflux PR (skip in fast mode)
 		onlyTektonFiles := false
-		if isKonflux {
+		if isKonflux && !fastMode {
 			var err error
 			onlyTektonFiles, _, err = checkTektonFilesDetailed(*client, owner, repo, pr.Number)
 			if err != nil {
@@ -2003,33 +2016,50 @@ func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.
 		}
 		status = TruncateString(status, stateWidth)
 
-		// Determine reviewed status
+		// Determine reviewed status (skip expensive API call in fast mode)
 		reviewedStatus := ""
-		if isReviewed(*client, owner, repo, pr.Number, pr.Labels) {
-			reviewedStatus = "✅"
+		if fastMode {
+			// In fast mode, only check labels (no API call to fetch reviews)
+			if hasApprovedLabel(pr.Labels) {
+				reviewedStatus = "✅"
+			} else {
+				reviewedStatus = "-" // Unknown in fast mode
+			}
 		} else {
-			reviewedStatus = "❌"
+			if isReviewed(*client, owner, repo, pr.Number, pr.Labels) {
+				reviewedStatus = "✅"
+			} else {
+				reviewedStatus = "❌"
+			}
 		}
 
-		// Determine rebase status
+		// Determine rebase status (skip in fast mode)
 		rebaseStatus := ""
-		needsRebase, hasState := needsRebaseWithCache(cache, *client, owner, repo, pr)
-		if !hasState {
-			rebaseStatus = "?" // Unknown state (API limit/error)
-		} else if needsRebase {
-			rebaseStatus = "🔄"
+		if fastMode {
+			rebaseStatus = "-" // Skip in fast mode
+		} else {
+			needsRebase, hasState := needsRebaseWithCache(cache, *client, owner, repo, pr)
+			if !hasState {
+				rebaseStatus = "?" // Unknown state (API limit/error)
+			} else if needsRebase {
+				rebaseStatus = "🔄"
+			}
+			// Leave empty if no rebase needed and state is valid
 		}
-		// Leave empty if no rebase needed and state is valid
 
-		// Determine blocked status
+		// Determine blocked status (skip in fast mode)
 		blockedStatus := ""
-		isBlocked, hasState := isBlockedWithCache(cache, *client, owner, repo, pr)
-		if !hasState {
-			blockedStatus = "?" // Unknown state (API limit/error)
-		} else if isBlocked {
-			blockedStatus = "🚫"
+		if fastMode {
+			blockedStatus = "-" // Skip in fast mode
+		} else {
+			isBlocked, hasState := isBlockedWithCache(cache, *client, owner, repo, pr)
+			if !hasState {
+				blockedStatus = "?" // Unknown state (API limit/error)
+			} else if isBlocked {
+				blockedStatus = "🚫"
+			}
+			// Leave empty if not blocked and state is valid
 		}
-		// Leave empty if not blocked and state is valid
 
 		// Determine nudge status
 		nudgeStatus := ""
@@ -2086,6 +2116,7 @@ func init() {
 	listCmd.Flags().StringVar(&sortBy, "sort-by", "", "Sort PRs by: newest (default), oldest, updated, number, priority (security updates first)")
 	listCmd.Flags().BoolVarP(&approve, "approve", "a", false, "Interactively approve pull requests (review + /lgtm comment)")
 	listCmd.Flags().BoolVarP(&securityOnly, "security-only", "", false, "Show only PRs that contain security updates (SECURITY or CVE in title)")
+	listCmd.Flags().BoolVar(&fastMode, "fast", false, "Fast mode: skip expensive API calls (rebase, blocked, review status)")
 	listCmd.Flags().BoolVarP(&showFiles, "show-files", "f", false, "Show detailed file list during approval process")
 	listCmd.Flags().BoolVarP(&showDiff, "show-diff", "d", false, "Show detailed diff during approval process")
 	listCmd.Flags().BoolVar(&noColor, "no-color", false, "Disable color output in diff display")
@@ -2097,6 +2128,7 @@ func init() {
 	konfluxCmd.Flags().BoolVarP(&tektonOnly, "tekton-only", "t", false, "Show only PRs that EXCLUSIVELY modify Tekton files (.tekton/*-pull-request.yaml or *-push.yaml)")
 	konfluxCmd.Flags().BoolVarP(&migrationOnly, "migration-only", "m", false, "Show only PRs that contain migration warnings")
 	konfluxCmd.Flags().BoolVarP(&securityOnly, "security-only", "", false, "Show only PRs that contain security updates (SECURITY or CVE in title)")
+	konfluxCmd.Flags().BoolVar(&fastMode, "fast", false, "Fast mode: skip expensive API calls (rebase, blocked, review status, Tekton file checks)")
 	konfluxCmd.Flags().StringVar(&sortBy, "sort-by", "", "Sort PRs by: newest (default), oldest, updated, number, priority (security updates first)")
 	konfluxCmd.Flags().BoolVarP(&showFiles, "show-files", "f", false, "Show detailed file list during approval process")
 	konfluxCmd.Flags().BoolVarP(&showDiff, "show-diff", "d", false, "Show detailed diff during approval process")
