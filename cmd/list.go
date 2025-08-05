@@ -130,6 +130,7 @@ var (
 	tektonOnly    bool
 	migrationOnly bool
 	securityOnly  bool
+	targetBranch  string
 	sortBy        string
 	showFiles     bool
 	showDiff      bool
@@ -156,6 +157,8 @@ Examples:
   ghprs list --sort-by oldest               # Show oldest PRs first
   ghprs list --sort-by updated               # Sort by last update
   ghprs list --security-only                # Show only security/CVE PRs
+  ghprs list --target-branch main           # Show only PRs targeting main branch
+  ghprs list --target-branch release/v1.0   # Show only PRs targeting release/v1.0 branch
   ghprs list --fast                         # Fast mode: skip expensive API calls for quick display
   ghprs list --approve                       # Interactively approve PRs (review + /lgtm comment)
   ghprs list --approve --show-files          # Approve with detailed file lists
@@ -186,6 +189,8 @@ Examples:
   ghprs konflux --tekton-only                # Show only PRs that EXCLUSIVELY modify Tekton files
   ghprs konflux --migration-only             # Show only PRs with migration warnings
   ghprs konflux --security-only              # Show only security/CVE PRs
+  ghprs konflux --target-branch main         # Show only Konflux PRs targeting main branch
+  ghprs konflux --target-branch release/v1.0 # Show only Konflux PRs targeting release/v1.0 branch
   ghprs konflux --fast                       # Fast mode: skip expensive API calls for quick display
   ghprs konflux --sort-by priority           # Sort by priority (security updates first, then migration warnings)
   ghprs konflux --sort-by oldest             # Show oldest PRs first
@@ -383,6 +388,33 @@ func listPullRequests(args []string, authorFilter string, isKonflux bool) {
 			continue
 		}
 
+		// Apply filtering to PRs
+		filteredPRs := filterPRs(pullRequests, *client, owner, repo, isKonflux)
+
+		// Check if filtering resulted in no PRs
+		if len(filteredPRs) == 0 {
+			var filterMsg string
+			if targetBranch != "" {
+				filterMsg = fmt.Sprintf(" targeting branch '%s'", targetBranch)
+			}
+			if securityOnly {
+				filterMsg += " with security updates"
+			}
+			if migrationOnly {
+				filterMsg += " with migration warnings"
+			}
+			if tektonOnly {
+				filterMsg += " with Tekton-only changes"
+			}
+
+			if isKonflux {
+				fmt.Printf("\nNo Konflux pull requests found for %s%s\n", repoSpec, filterMsg)
+			} else {
+				fmt.Printf("\nNo %s pull requests found for %s%s\n", state, repoSpec, filterMsg)
+			}
+			continue
+		}
+
 		/*
 			// Single repository - show full header
 			if isKonflux {
@@ -404,16 +436,16 @@ func listPullRequests(args []string, authorFilter string, isKonflux bool) {
 				}
 			}
 
-			// Start approval flow - table will be displayed there
-			approvePRsWithConfig(*client, owner, repo, pullRequests, config, nil)
+			// Start approval flow with filtered PRs - table will be displayed there
+			approvePRsWithConfig(*client, owner, repo, filteredPRs, config, nil)
 			continue
 		}
 
 		// Display PR list in table format
 		if i == 0 {
-			_ = displayPRTable(pullRequests, owner, repo, client, isKonflux, true, nil)
+			_ = displayPRTable(filteredPRs, owner, repo, client, isKonflux, true, nil)
 		} else {
-			_ = displayPRTable(pullRequests, owner, repo, client, isKonflux, false, nil)
+			_ = displayPRTable(filteredPRs, owner, repo, client, isKonflux, false, nil)
 		}
 	}
 }
@@ -1114,6 +1146,52 @@ func hasApprovedLabel(labels []Label) bool {
 		}
 	}
 	return false
+}
+
+// filterPRs applies all the filtering logic to a list of PRs
+func filterPRs(pullRequests []PullRequest, client api.RESTClient, owner, repo string, isKonflux bool) []PullRequest {
+	var filteredPRs []PullRequest
+
+	for _, pr := range pullRequests {
+		// Check for Tekton files if this is a Konflux PR (skip in fast mode)
+		onlyTektonFiles := false
+		if isKonflux && !fastMode {
+			var err error
+			onlyTektonFiles, _, err = checkTektonFilesDetailed(client, owner, repo, pr.Number)
+			if err != nil {
+				// Silently continue if we can't check Tekton files for filtering
+				_ = err
+			}
+		}
+
+		// Check for migration warnings
+		hasMigration := hasMigrationWarning(pr)
+
+		// Skip PRs that don't exclusively modify Tekton files if --tekton-only flag is set
+		if tektonOnly && !onlyTektonFiles {
+			continue
+		}
+
+		// Skip PRs that don't have migration warnings if --migration-only flag is set
+		if migrationOnly && !hasMigration {
+			continue
+		}
+
+		// Skip PRs that don't have security updates if --security-only flag is set
+		if securityOnly && !hasSecurity(pr) {
+			continue
+		}
+
+		// Skip PRs that don't target the specified branch if --target-branch is set
+		if targetBranch != "" && pr.Base.Ref != targetBranch {
+			continue
+		}
+
+		// PR passed all filters, include it
+		filteredPRs = append(filteredPRs, pr)
+	}
+
+	return filteredPRs
 }
 
 // isKonfluxNudge checks if a PR has the "konflux-nudge" label
@@ -1955,9 +2033,10 @@ func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.
 	}
 	fmt.Printf("\n")
 
-	// Display each PR as a table row
+	// Display each PR as a table row (PRs are already filtered)
 	for _, pr := range pullRequests {
 		// Check for Tekton files if this is a Konflux PR (skip in fast mode)
+		// Note: This may be redundant if already filtered, but needed for display logic
 		onlyTektonFiles := false
 		if isKonflux && !fastMode {
 			var err error
@@ -1969,23 +2048,8 @@ func displayPRTable(pullRequests []PullRequest, owner, repo string, client *api.
 			}
 		}
 
-		// Check for migration warnings
+		// Check for migration warnings (needed for display)
 		hasMigration := hasMigrationWarning(pr)
-
-		// Skip PRs that don't exclusively modify Tekton files if --tekton-only flag is set
-		if tektonOnly && !onlyTektonFiles {
-			continue
-		}
-
-		// Skip PRs that don't have migration warnings if --migration-only flag is set
-		if migrationOnly && !hasMigration {
-			continue
-		}
-
-		// Skip PRs that don't have security updates if --security-only flag is set
-		if securityOnly && !hasSecurity(pr) {
-			continue
-		}
 
 		// Get status icon
 		var icon string
@@ -2116,6 +2180,7 @@ func init() {
 	listCmd.Flags().StringVar(&sortBy, "sort-by", "", "Sort PRs by: newest (default), oldest, updated, number, priority (security updates first)")
 	listCmd.Flags().BoolVarP(&approve, "approve", "a", false, "Interactively approve pull requests (review + /lgtm comment)")
 	listCmd.Flags().BoolVarP(&securityOnly, "security-only", "", false, "Show only PRs that contain security updates (SECURITY or CVE in title)")
+	listCmd.Flags().StringVar(&targetBranch, "target-branch", "", "Filter PRs by target branch (e.g., main, dev, release/v1.0)")
 	listCmd.Flags().BoolVar(&fastMode, "fast", false, "Fast mode: skip expensive API calls (rebase, blocked, review status)")
 	listCmd.Flags().BoolVarP(&showFiles, "show-files", "f", false, "Show detailed file list during approval process")
 	listCmd.Flags().BoolVarP(&showDiff, "show-diff", "d", false, "Show detailed diff during approval process")
@@ -2128,6 +2193,7 @@ func init() {
 	konfluxCmd.Flags().BoolVarP(&tektonOnly, "tekton-only", "t", false, "Show only PRs that EXCLUSIVELY modify Tekton files (.tekton/*-pull-request.yaml or *-push.yaml)")
 	konfluxCmd.Flags().BoolVarP(&migrationOnly, "migration-only", "m", false, "Show only PRs that contain migration warnings")
 	konfluxCmd.Flags().BoolVarP(&securityOnly, "security-only", "", false, "Show only PRs that contain security updates (SECURITY or CVE in title)")
+	konfluxCmd.Flags().StringVar(&targetBranch, "target-branch", "", "Filter PRs by target branch (e.g., main, dev, release/v1.0)")
 	konfluxCmd.Flags().BoolVar(&fastMode, "fast", false, "Fast mode: skip expensive API calls (rebase, blocked, review status, Tekton file checks)")
 	konfluxCmd.Flags().StringVar(&sortBy, "sort-by", "", "Sort PRs by: newest (default), oldest, updated, number, priority (security updates first)")
 	konfluxCmd.Flags().BoolVarP(&showFiles, "show-files", "f", false, "Show detailed file list during approval process")
