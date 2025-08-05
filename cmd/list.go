@@ -159,6 +159,7 @@ Examples:
   ghprs list --security-only                # Show only security/CVE PRs
   ghprs list --target-branch main           # Show only PRs targeting main branch
   ghprs list --target-branch release/v1.0   # Show only PRs targeting release/v1.0 branch
+  ghprs list --limit 10 --target-branch main # Limit to 10 PRs targeting main (efficient API filtering)
   ghprs list --fast                         # Fast mode: skip expensive API calls for quick display
   ghprs list --approve                       # Interactively approve PRs (review + /lgtm comment)
   ghprs list --approve --show-files          # Approve with detailed file lists
@@ -191,6 +192,7 @@ Examples:
   ghprs konflux --security-only              # Show only security/CVE PRs
   ghprs konflux --target-branch main         # Show only Konflux PRs targeting main branch
   ghprs konflux --target-branch release/v1.0 # Show only Konflux PRs targeting release/v1.0 branch
+  ghprs konflux --limit 5 --tekton-only      # Limit to 5 Tekton-only PRs (local filtering)
   ghprs konflux --fast                       # Fast mode: skip expensive API calls for quick display
   ghprs konflux --sort-by priority           # Sort by priority (security updates first, then migration warnings)
   ghprs konflux --sort-by oldest             # Show oldest PRs first
@@ -340,7 +342,25 @@ func listPullRequests(args []string, authorFilter string, isKonflux bool) {
 		if state != "" {
 			params = append(params, "state="+state)
 		}
-		if limit > 0 {
+
+		// Apply target branch filter directly to API call if specified
+		if targetBranch != "" {
+			params = append(params, "base="+targetBranch)
+		}
+
+		// Check if we have filters that require local filtering (can't be done via API)
+		hasLocalFilters := securityOnly || migrationOnly || tektonOnly
+
+		// If we have local filters, fetch more PRs to avoid missing results after filtering
+		// Otherwise, use the normal limit
+		if hasLocalFilters && limit > 0 {
+			// Fetch more PRs when local filtering to avoid missing results
+			fetchLimit := limit * 3 // Fetch 3x more to account for filtering
+			if fetchLimit > 100 {
+				fetchLimit = 100 // GitHub API max per page
+			}
+			params = append(params, "per_page="+strconv.Itoa(fetchLimit))
+		} else if limit > 0 {
 			params = append(params, "per_page="+strconv.Itoa(limit))
 		}
 
@@ -390,6 +410,11 @@ func listPullRequests(args []string, authorFilter string, isKonflux bool) {
 
 		// Apply filtering to PRs
 		filteredPRs := filterPRs(pullRequests, *client, owner, repo, isKonflux)
+
+		// Apply user's limit after filtering (only if we fetched extra for local filtering)
+		if hasLocalFilters && limit > 0 && len(filteredPRs) > limit {
+			filteredPRs = filteredPRs[:limit]
+		}
 
 		// Check if filtering resulted in no PRs
 		if len(filteredPRs) == 0 {
@@ -2175,7 +2200,7 @@ func init() {
 
 	// Add flags to both commands
 	listCmd.Flags().StringVarP(&state, "state", "s", "open", "Filter by state: open, closed, all")
-	listCmd.Flags().IntVarP(&limit, "limit", "l", 30, "Maximum number of pull requests to show")
+	listCmd.Flags().IntVarP(&limit, "limit", "l", 30, "Maximum number of pull requests to show (when using text filters, more PRs are fetched to avoid missing results)")
 	listCmd.Flags().BoolVarP(&current, "current", "c", false, "Use current repository, bypass config")
 	listCmd.Flags().StringVar(&sortBy, "sort-by", "", "Sort PRs by: newest (default), oldest, updated, number, priority (security updates first)")
 	listCmd.Flags().BoolVarP(&approve, "approve", "a", false, "Interactively approve pull requests (review + /lgtm comment)")
@@ -2187,7 +2212,7 @@ func init() {
 	listCmd.Flags().BoolVar(&noColor, "no-color", false, "Disable color output in diff display")
 
 	konfluxCmd.Flags().StringVarP(&state, "state", "s", "open", "Filter by state: open, closed, all")
-	konfluxCmd.Flags().IntVarP(&limit, "limit", "l", 30, "Maximum number of pull requests to show")
+	konfluxCmd.Flags().IntVarP(&limit, "limit", "l", 30, "Maximum number of pull requests to show (when using text filters, more PRs are fetched to avoid missing results)")
 	konfluxCmd.Flags().BoolVarP(&current, "current", "c", false, "Use current repository, bypass config")
 	konfluxCmd.Flags().BoolVarP(&approve, "approve", "a", false, "Interactively approve Konflux pull requests (review + /lgtm comment)")
 	konfluxCmd.Flags().BoolVarP(&tektonOnly, "tekton-only", "t", false, "Show only PRs that EXCLUSIVELY modify Tekton files (.tekton/*-pull-request.yaml or *-push.yaml)")
