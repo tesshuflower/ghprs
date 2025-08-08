@@ -164,3 +164,43 @@ func (c *Config) RemoveRepository(repo string, isKonflux bool) bool {
 	}
 	return false
 }
+
+// loadConfig loads configuration from a specific path (for testing)
+func loadConfig(path string) (*Config, error) {
+	// If config file doesn't exist, return error
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return nil, fmt.Errorf("config file not found: %s", path)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read config file: %w", err)
+	}
+
+	var config Config
+	if err := yaml.Unmarshal(data, &config); err != nil {
+		return nil, fmt.Errorf("failed to parse config file: %w", err)
+	}
+
+	return &config, nil
+}
+
+// saveConfig saves the configuration to a specific path (for testing)
+func saveConfig(config Config, path string) error {
+	// Create directory if it doesn't exist
+	configDir := filepath.Dir(path)
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		return fmt.Errorf("failed to create config directory: %w", err)
+	}
+
+	data, err := yaml.Marshal(&config)
+	if err != nil {
+		return fmt.Errorf("failed to marshal config: %w", err)
+	}
+
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		return fmt.Errorf("failed to write config file: %w", err)
+	}
+
+	return nil
+}

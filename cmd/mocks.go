@@ -68,28 +68,41 @@ func (m *MockRESTClient) Request(method string, path string, body io.Reader) (*h
 		Body:   string(bodyBytes),
 	})
 
-	// Find matching response
+	// Find matching response - prefer exact matches first
+	var matchedResponse *MockResponse
+	var bestMatch string
+
 	for pattern, response := range m.Responses {
-		if strings.Contains(path, pattern) || matchesPattern(path, pattern) {
-			if response.Error != nil {
-				return nil, response.Error
-			}
-
-			// Create HTTP response
-			var responseBody []byte
-			if response.Body != nil {
-				responseBody, _ = json.Marshal(response.Body)
-			}
-
-			httpResponse := &http.Response{
-				StatusCode: response.StatusCode,
-				Body:       io.NopCloser(bytes.NewReader(responseBody)),
-				Header:     make(http.Header),
-			}
-			httpResponse.Header.Set("Content-Type", "application/json")
-
-			return httpResponse, nil
+		if path == pattern {
+			// Exact match - use this immediately
+			matchedResponse = response
+			break
+		} else if (strings.Contains(path, pattern) || matchesPattern(path, pattern)) && len(pattern) > len(bestMatch) {
+			// Partial match - prefer longer patterns (more specific)
+			matchedResponse = response
+			bestMatch = pattern
 		}
+	}
+
+	if matchedResponse != nil {
+		if matchedResponse.Error != nil {
+			return nil, matchedResponse.Error
+		}
+
+		// Create HTTP response
+		var responseBody []byte
+		if matchedResponse.Body != nil {
+			responseBody, _ = json.Marshal(matchedResponse.Body)
+		}
+
+		httpResponse := &http.Response{
+			StatusCode: matchedResponse.StatusCode,
+			Body:       io.NopCloser(bytes.NewReader(responseBody)),
+			Header:     make(http.Header),
+		}
+		httpResponse.Header.Set("Content-Type", "application/json")
+
+		return httpResponse, nil
 	}
 
 	// Default 404 response

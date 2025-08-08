@@ -90,3 +90,15 @@ func NeedsRebaseWithCacheTest(cache *PRDetailsCache, client RESTClientInterface,
 func IsBlockedWithCacheTest(cache *PRDetailsCache, client RESTClientInterface, owner, repo string, pr PullRequest) (bool, bool) {
 	return isBlockedWithCache(cache, client, owner, repo, pr)
 }
+
+func FilterPRsTest(pullRequests []PullRequest, client RESTClientInterface, owner, repo string, isKonflux bool) []PullRequest {
+	return filterPRs(pullRequests, client, owner, repo, isKonflux)
+}
+
+func SaveConfigTest(config Config, path string) error {
+	return saveConfig(config, path)
+}
+
+func LoadConfigTest(path string) (*Config, error) {
+	return loadConfig(path)
+}

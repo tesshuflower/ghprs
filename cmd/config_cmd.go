@@ -8,7 +8,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-
 // configShowCmd shows the current configuration
 var configShowCmd = &cobra.Command{
 	Use:   "show",
