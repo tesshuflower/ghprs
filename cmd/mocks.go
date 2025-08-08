@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,7 +10,7 @@ import (
 	"strings"
 )
 
-// MockRESTClient implements api.RESTClient for testing
+// MockRESTClient implements RESTClientInterface for testing
 type MockRESTClient struct {
 	// Responses maps URL patterns to mock responses
 	Responses map[string]*MockResponse
@@ -53,7 +54,7 @@ func (m *MockRESTClient) AddErrorResponse(urlPattern string, err error) {
 	}
 }
 
-// Request implements the api.RESTClient interface
+// Request implements the RESTClientInterface interface
 func (m *MockRESTClient) Request(method string, path string, body io.Reader) (*http.Response, error) {
 	// Record the request
 	bodyBytes := []byte{}
@@ -99,8 +100,9 @@ func (m *MockRESTClient) Request(method string, path string, body io.Reader) (*h
 	}, nil
 }
 
-// RequestWithContext implements the api.RESTClient interface (if needed)
-func (m *MockRESTClient) RequestWithContext(ctx interface{}, method string, path string, body io.Reader) (*http.Response, error) {
+// RequestWithContext implements the RESTClientInterface interface
+func (m *MockRESTClient) RequestWithContext(ctx context.Context, method string, path string, body io.Reader) (*http.Response, error) {
+	// For mock purposes, we ignore the context
 	return m.Request(method, path, body)
 }
 
@@ -128,14 +130,8 @@ func (m *MockRESTClient) Get(path string, response interface{}) error {
 }
 
 // Post implements common POST requests
-func (m *MockRESTClient) Post(path string, body interface{}, response interface{}) error {
-	var bodyReader io.Reader
-	if body != nil {
-		bodyBytes, _ := json.Marshal(body)
-		bodyReader = bytes.NewReader(bodyBytes)
-	}
-
-	httpResp, err := m.Request("POST", path, bodyReader)
+func (m *MockRESTClient) Post(path string, body io.Reader, response interface{}) error {
+	httpResp, err := m.Request("POST", path, body)
 	if err != nil {
 		return err
 	}
@@ -154,6 +150,104 @@ func (m *MockRESTClient) Post(path string, body interface{}, response interface{
 	}
 
 	return nil
+}
+
+// Put implements common PUT requests
+func (m *MockRESTClient) Put(path string, body io.Reader, response interface{}) error {
+	httpResp, err := m.Request("PUT", path, body)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = httpResp.Body.Close() }()
+
+	if httpResp.StatusCode >= 400 {
+		return fmt.Errorf("HTTP %d", httpResp.StatusCode)
+	}
+
+	if response != nil {
+		respBody, err := io.ReadAll(httpResp.Body)
+		if err != nil {
+			return err
+		}
+		return json.Unmarshal(respBody, response)
+	}
+
+	return nil
+}
+
+// Patch implements common PATCH requests
+func (m *MockRESTClient) Patch(path string, body io.Reader, response interface{}) error {
+	httpResp, err := m.Request("PATCH", path, body)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = httpResp.Body.Close() }()
+
+	if httpResp.StatusCode >= 400 {
+		return fmt.Errorf("HTTP %d", httpResp.StatusCode)
+	}
+
+	if response != nil {
+		respBody, err := io.ReadAll(httpResp.Body)
+		if err != nil {
+			return err
+		}
+		return json.Unmarshal(respBody, response)
+	}
+
+	return nil
+}
+
+// Delete implements common DELETE requests
+func (m *MockRESTClient) Delete(path string, response interface{}) error {
+	httpResp, err := m.Request("DELETE", path, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = httpResp.Body.Close() }()
+
+	if httpResp.StatusCode >= 400 {
+		return fmt.Errorf("HTTP %d", httpResp.StatusCode)
+	}
+
+	if response != nil {
+		respBody, err := io.ReadAll(httpResp.Body)
+		if err != nil {
+			return err
+		}
+		return json.Unmarshal(respBody, response)
+	}
+
+	return nil
+}
+
+// Do implements the generic Do method
+func (m *MockRESTClient) Do(method string, path string, body io.Reader, response interface{}) error {
+	httpResp, err := m.Request(method, path, body)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = httpResp.Body.Close() }()
+
+	if httpResp.StatusCode >= 400 {
+		return fmt.Errorf("HTTP %d", httpResp.StatusCode)
+	}
+
+	if response != nil {
+		respBody, err := io.ReadAll(httpResp.Body)
+		if err != nil {
+			return err
+		}
+		return json.Unmarshal(respBody, response)
+	}
+
+	return nil
+}
+
+// DoWithContext implements the generic DoWithContext method
+func (m *MockRESTClient) DoWithContext(ctx context.Context, method string, path string, body io.Reader, response interface{}) error {
+	// For mock purposes, we ignore the context
+	return m.Do(method, path, body, response)
 }
 
 // GetRequestCount returns the number of requests made to a URL pattern
