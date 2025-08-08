@@ -1,7 +1,5 @@
 package cmd
 
-import "github.com/cli/go-gh/v2/pkg/api"
-
 // Test helper functions that expose internal functionality for testing
 
 // Exported utility functions for testing
@@ -53,11 +51,11 @@ func IsBlockedTest(pr PullRequest) bool {
 	return isBlocked(pr)
 }
 
-func IsReviewedTest(client api.RESTClient, owner, repo string, prNumber int, labels []Label) bool {
+func IsReviewedTest(client RESTClientInterface, owner, repo string, prNumber int, labels []Label) bool {
 	return isReviewed(client, owner, repo, prNumber, labels)
 }
 
-func FetchPRDetailsTest(client api.RESTClient, owner, repo string, prNumber int) (*PullRequest, error) {
+func FetchPRDetailsTest(client RESTClientInterface, owner, repo string, prNumber int) (*PullRequest, error) {
 	return fetchPRDetails(client, owner, repo, prNumber)
 }
 
@@ -65,7 +63,7 @@ func NewPRDetailsCacheTest() *PRDetailsCache {
 	return NewPRDetailsCache()
 }
 
-func (c *PRDetailsCache) GetOrFetchTest(client api.RESTClient, owner, repo string, prNumber int, originalPR PullRequest) *PullRequest {
+func (c *PRDetailsCache) GetOrFetchTest(client RESTClientInterface, owner, repo string, prNumber int, originalPR PullRequest) *PullRequest {
 	return c.GetOrFetch(client, owner, repo, prNumber, originalPR)
 }
 
@@ -75,4 +73,32 @@ func ColorizeGitDiffTest(diff string) string {
 
 func SortPullRequestsTest(prs []PullRequest, sortBy string) {
 	sortPullRequests(prs, sortBy)
+}
+
+func HasSecurityTest(pr PullRequest) bool {
+	return hasSecurity(pr)
+}
+
+func CheckTektonFilesDetailedTest(client RESTClientInterface, owner, repo string, prNumber int) (bool, []string, error) {
+	return checkTektonFilesDetailed(client, owner, repo, prNumber)
+}
+
+func NeedsRebaseWithCacheTest(cache *PRDetailsCache, client RESTClientInterface, owner, repo string, pr PullRequest) (bool, bool) {
+	return needsRebaseWithCache(cache, client, owner, repo, pr)
+}
+
+func IsBlockedWithCacheTest(cache *PRDetailsCache, client RESTClientInterface, owner, repo string, pr PullRequest) (bool, bool) {
+	return isBlockedWithCache(cache, client, owner, repo, pr)
+}
+
+func FilterPRsTest(pullRequests []PullRequest, client RESTClientInterface, owner, repo string, isKonflux bool) []PullRequest {
+	return filterPRs(pullRequests, client, owner, repo, isKonflux)
+}
+
+func SaveConfigTest(config Config, path string) error {
+	return saveConfig(config, path)
+}
+
+func LoadConfigTest(path string) (*Config, error) {
+	return loadConfig(path)
 }
