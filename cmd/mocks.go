@@ -376,15 +376,15 @@ func CreateMockCheckRuns(passed, failed, pending int) CheckRunsResponse {
 func CreateMockPRFiles(tektonOnly bool) []PRFile {
 	if tektonOnly {
 		return []PRFile{
-			{Filename: ".tekton/pipeline.yaml", Status: "modified"},
-			{Filename: ".tekton/task.yaml", Status: "added"},
+			{Filename: ".tekton/pipeline-pull-request.yaml", Status: "modified"},
+			{Filename: ".tekton/build-push.yaml", Status: "added"},
 		}
 	}
 
 	return []PRFile{
 		{Filename: "main.go", Status: "modified"},
 		{Filename: "README.md", Status: "modified"},
-		{Filename: ".tekton/pipeline.yaml", Status: "added"},
+		{Filename: ".tekton/pipeline-pull-request.yaml", Status: "added"},
 	}
 }
 
