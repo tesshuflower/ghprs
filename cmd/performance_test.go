@@ -209,9 +209,10 @@ var _ = Describe("Performance and Stress Tests", func() {
 				// Test needsRebase with cache
 				needsRebase, hasState := cmd.NeedsRebaseWithCacheTest(cache, mockClient, owner, repo, pr)
 
-				if state == "dirty" || state == "behind" {
+				switch state {
+				case "dirty", "behind":
 					Expect(needsRebase).To(BeTrue())
-				} else if state == "clean" {
+				case "clean":
 					Expect(needsRebase).To(BeFalse())
 				}
 
