@@ -81,8 +81,26 @@ func SaveConfig(config *Config) error {
 	return nil
 }
 
+// configPath can be overridden for testing
+var configPath string
+
+// SetConfigPath sets a custom config path (used for testing)
+func SetConfigPath(path string) {
+	configPath = path
+}
+
+// ResetConfigPath resets the config path to use the default HOME-based path
+func ResetConfigPath() {
+	configPath = ""
+}
+
 // getConfigPath returns the path to the configuration file
 func getConfigPath() string {
+	// If a custom config path is set, use it
+	if configPath != "" {
+		return configPath
+	}
+
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		// Fallback to current directory
