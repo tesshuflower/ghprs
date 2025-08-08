@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/cli/go-gh/v2/pkg/api"
 	"github.com/cli/go-gh/v2/pkg/repository"
@@ -991,14 +992,12 @@ func isBlocked(pr PullRequest) bool {
 
 // PRDetailsCache caches fetched PR details to avoid duplicate API calls
 type PRDetailsCache struct {
-	cache map[int]*PullRequest
+	cache sync.Map
 }
 
 // NewPRDetailsCache creates a new PR details cache
 func NewPRDetailsCache() *PRDetailsCache {
-	return &PRDetailsCache{
-		cache: make(map[int]*PullRequest),
-	}
+	return &PRDetailsCache{}
 }
 
 // GetOrFetch gets PR details from cache or fetches them if not cached
@@ -1012,7 +1011,8 @@ func (c *PRDetailsCache) GetOrFetch(client RESTClientInterface, owner, repo stri
 	}
 
 	// Check cache first, but only use if it has valid mergeable_state
-	if cachedPR, exists := c.cache[prNumber]; exists {
+	if cached, exists := c.cache.Load(prNumber); exists {
+		cachedPR := cached.(*PullRequest)
 		cachedState := strings.TrimSpace(cachedPR.MergeableState)
 		if cachedState != "" && cachedState != "unknown" {
 			return cachedPR
@@ -1026,7 +1026,7 @@ func (c *PRDetailsCache) GetOrFetch(client RESTClientInterface, owner, repo stri
 	if err != nil {
 		// If we can't fetch details, cache the original PR to avoid retrying
 		// Note: This is often due to rate limiting or permissions
-		c.cache[prNumber] = &originalPR
+		c.cache.Store(prNumber, &originalPR)
 		return &originalPR
 	}
 
@@ -1034,7 +1034,7 @@ func (c *PRDetailsCache) GetOrFetch(client RESTClientInterface, owner, repo stri
 	// GitHub computes this asynchronously, so it might not be ready on first call
 	prState := strings.TrimSpace(pr.MergeableState)
 	if prState != "" && prState != "unknown" {
-		c.cache[prNumber] = &pr
+		c.cache.Store(prNumber, &pr)
 	}
 	return &pr
 }

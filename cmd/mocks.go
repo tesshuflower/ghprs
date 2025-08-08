@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 )
 
 // MockRESTClient implements RESTClientInterface for testing
@@ -16,6 +17,8 @@ type MockRESTClient struct {
 	Responses map[string]*MockResponse
 	// Requests stores all requests made for verification
 	Requests []MockRequest
+	// mutex protects concurrent access to the Requests slice
+	mutex sync.RWMutex
 }
 
 type MockResponse struct {
@@ -62,11 +65,13 @@ func (m *MockRESTClient) Request(method string, path string, body io.Reader) (*h
 		bodyBytes, _ = io.ReadAll(body)
 	}
 
+	m.mutex.Lock()
 	m.Requests = append(m.Requests, MockRequest{
 		Method: method,
 		URL:    path,
 		Body:   string(bodyBytes),
 	})
+	m.mutex.Unlock()
 
 	// Find matching response - prefer exact matches first
 	var matchedResponse *MockResponse
@@ -265,6 +270,9 @@ func (m *MockRESTClient) DoWithContext(ctx context.Context, method string, path 
 
 // GetRequestCount returns the number of requests made to a URL pattern
 func (m *MockRESTClient) GetRequestCount(urlPattern string) int {
+	m.mutex.RLock()
+	defer m.mutex.RUnlock()
+
 	count := 0
 	for _, req := range m.Requests {
 		if strings.Contains(req.URL, urlPattern) || matchesPattern(req.URL, urlPattern) {
@@ -276,6 +284,9 @@ func (m *MockRESTClient) GetRequestCount(urlPattern string) int {
 
 // GetLastRequest returns the most recent request made
 func (m *MockRESTClient) GetLastRequest() *MockRequest {
+	m.mutex.RLock()
+	defer m.mutex.RUnlock()
+
 	if len(m.Requests) == 0 {
 		return nil
 	}
@@ -284,6 +295,8 @@ func (m *MockRESTClient) GetLastRequest() *MockRequest {
 
 // ClearRequests clears the request history
 func (m *MockRESTClient) ClearRequests() {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
 	m.Requests = make([]MockRequest, 0)
 }
 
