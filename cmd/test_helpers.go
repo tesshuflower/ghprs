@@ -80,3 +80,15 @@ func SortPullRequestsTest(prs []PullRequest, sortBy string) {
 func HasSecurityTest(pr PullRequest) bool {
 	return hasSecurity(pr)
 }
+
+func CheckTektonFilesDetailedTest(client api.RESTClient, owner, repo string, prNumber int) (bool, []string, error) {
+	return checkTektonFilesDetailed(client, owner, repo, prNumber)
+}
+
+func NeedsRebaseWithCacheTest(cache *PRDetailsCache, client api.RESTClient, owner, repo string, pr PullRequest) (bool, bool) {
+	return needsRebaseWithCache(cache, client, owner, repo, pr)
+}
+
+func IsBlockedWithCacheTest(cache *PRDetailsCache, client api.RESTClient, owner, repo string, pr PullRequest) (bool, bool) {
+	return isBlockedWithCache(cache, client, owner, repo, pr)
+}
