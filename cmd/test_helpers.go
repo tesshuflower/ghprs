@@ -76,3 +76,7 @@ func ColorizeGitDiffTest(diff string) string {
 func SortPullRequestsTest(prs []PullRequest, sortBy string) {
 	sortPullRequests(prs, sortBy)
 }
+
+func HasSecurityTest(pr PullRequest) bool {
+	return hasSecurity(pr)
+}
