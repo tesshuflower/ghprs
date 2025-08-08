@@ -8,18 +8,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// configCmd represents the config command
-var configCmd = &cobra.Command{
-	Use:   "config",
-	Short: "Manage ghprs configuration",
-	Long: `Manage ghprs configuration file.
-
-The configuration file allows you to set repositories, states, and limits.
-Repositories can be marked as Konflux repositories. 'ghprs list' shows all repositories,
-while 'ghprs konflux' shows only repositories marked as Konflux.
-Configuration is stored in ~/.config/ghprs/config.yaml`,
-}
-
 // configShowCmd shows the current configuration
 var configShowCmd = &cobra.Command{
 	Use:   "show",
@@ -262,8 +250,21 @@ var configRemoveKonfluxRepoCmd = &cobra.Command{
 	},
 }
 
-func init() {
-	RootCmd.AddCommand(configCmd)
+// AddConfigCommands adds all config commands to the provided root command
+// This is used for testing to avoid global state issues
+func AddConfigCommands(rootCmd *cobra.Command) {
+	configCmd := &cobra.Command{
+		Use:   "config",
+		Short: "Manage ghprs configuration",
+		Long: `Manage ghprs configuration file.
+
+The configuration file allows you to set repositories, states, and limits.
+Repositories can be marked as Konflux repositories. 'ghprs list' shows all repositories,
+while 'ghprs konflux' shows only repositories marked as Konflux.
+Configuration is stored in ~/.config/ghprs/config.yaml`,
+	}
+
+	rootCmd.AddCommand(configCmd)
 
 	configCmd.AddCommand(configShowCmd)
 	configCmd.AddCommand(configInitCmd)
@@ -272,4 +273,8 @@ func init() {
 	configCmd.AddCommand(configAddKonfluxRepoCmd)
 	configCmd.AddCommand(configRemoveKonfluxRepoCmd)
 	configCmd.AddCommand(configSetCmd)
+}
+
+func init() {
+	AddConfigCommands(RootCmd)
 }

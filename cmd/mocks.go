@@ -2,19 +2,23 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 )
 
-// MockRESTClient implements api.RESTClient for testing
+// MockRESTClient implements RESTClientInterface for testing
 type MockRESTClient struct {
 	// Responses maps URL patterns to mock responses
 	Responses map[string]*MockResponse
 	// Requests stores all requests made for verification
 	Requests []MockRequest
+	// mutex protects concurrent access to the Requests slice
+	mutex sync.RWMutex
 }
 
 type MockResponse struct {
@@ -53,7 +57,7 @@ func (m *MockRESTClient) AddErrorResponse(urlPattern string, err error) {
 	}
 }
 
-// Request implements the api.RESTClient interface
+// Request implements the RESTClientInterface interface
 func (m *MockRESTClient) Request(method string, path string, body io.Reader) (*http.Response, error) {
 	// Record the request
 	bodyBytes := []byte{}
@@ -61,34 +65,49 @@ func (m *MockRESTClient) Request(method string, path string, body io.Reader) (*h
 		bodyBytes, _ = io.ReadAll(body)
 	}
 
+	m.mutex.Lock()
 	m.Requests = append(m.Requests, MockRequest{
 		Method: method,
 		URL:    path,
 		Body:   string(bodyBytes),
 	})
+	m.mutex.Unlock()
 
-	// Find matching response
+	// Find matching response - prefer exact matches first
+	var matchedResponse *MockResponse
+	var bestMatch string
+
 	for pattern, response := range m.Responses {
-		if strings.Contains(path, pattern) || matchesPattern(path, pattern) {
-			if response.Error != nil {
-				return nil, response.Error
-			}
-
-			// Create HTTP response
-			var responseBody []byte
-			if response.Body != nil {
-				responseBody, _ = json.Marshal(response.Body)
-			}
-
-			httpResponse := &http.Response{
-				StatusCode: response.StatusCode,
-				Body:       io.NopCloser(bytes.NewReader(responseBody)),
-				Header:     make(http.Header),
-			}
-			httpResponse.Header.Set("Content-Type", "application/json")
-
-			return httpResponse, nil
+		if path == pattern {
+			// Exact match - use this immediately
+			matchedResponse = response
+			break
+		} else if (strings.Contains(path, pattern) || matchesPattern(path, pattern)) && len(pattern) > len(bestMatch) {
+			// Partial match - prefer longer patterns (more specific)
+			matchedResponse = response
+			bestMatch = pattern
 		}
+	}
+
+	if matchedResponse != nil {
+		if matchedResponse.Error != nil {
+			return nil, matchedResponse.Error
+		}
+
+		// Create HTTP response
+		var responseBody []byte
+		if matchedResponse.Body != nil {
+			responseBody, _ = json.Marshal(matchedResponse.Body)
+		}
+
+		httpResponse := &http.Response{
+			StatusCode: matchedResponse.StatusCode,
+			Body:       io.NopCloser(bytes.NewReader(responseBody)),
+			Header:     make(http.Header),
+		}
+		httpResponse.Header.Set("Content-Type", "application/json")
+
+		return httpResponse, nil
 	}
 
 	// Default 404 response
@@ -99,8 +118,9 @@ func (m *MockRESTClient) Request(method string, path string, body io.Reader) (*h
 	}, nil
 }
 
-// RequestWithContext implements the api.RESTClient interface (if needed)
-func (m *MockRESTClient) RequestWithContext(ctx interface{}, method string, path string, body io.Reader) (*http.Response, error) {
+// RequestWithContext implements the RESTClientInterface interface
+func (m *MockRESTClient) RequestWithContext(ctx context.Context, method string, path string, body io.Reader) (*http.Response, error) {
+	// For mock purposes, we ignore the context
 	return m.Request(method, path, body)
 }
 
@@ -128,14 +148,8 @@ func (m *MockRESTClient) Get(path string, response interface{}) error {
 }
 
 // Post implements common POST requests
-func (m *MockRESTClient) Post(path string, body interface{}, response interface{}) error {
-	var bodyReader io.Reader
-	if body != nil {
-		bodyBytes, _ := json.Marshal(body)
-		bodyReader = bytes.NewReader(bodyBytes)
-	}
-
-	httpResp, err := m.Request("POST", path, bodyReader)
+func (m *MockRESTClient) Post(path string, body io.Reader, response interface{}) error {
+	httpResp, err := m.Request("POST", path, body)
 	if err != nil {
 		return err
 	}
@@ -156,8 +170,109 @@ func (m *MockRESTClient) Post(path string, body interface{}, response interface{
 	return nil
 }
 
+// Put implements common PUT requests
+func (m *MockRESTClient) Put(path string, body io.Reader, response interface{}) error {
+	httpResp, err := m.Request("PUT", path, body)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = httpResp.Body.Close() }()
+
+	if httpResp.StatusCode >= 400 {
+		return fmt.Errorf("HTTP %d", httpResp.StatusCode)
+	}
+
+	if response != nil {
+		respBody, err := io.ReadAll(httpResp.Body)
+		if err != nil {
+			return err
+		}
+		return json.Unmarshal(respBody, response)
+	}
+
+	return nil
+}
+
+// Patch implements common PATCH requests
+func (m *MockRESTClient) Patch(path string, body io.Reader, response interface{}) error {
+	httpResp, err := m.Request("PATCH", path, body)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = httpResp.Body.Close() }()
+
+	if httpResp.StatusCode >= 400 {
+		return fmt.Errorf("HTTP %d", httpResp.StatusCode)
+	}
+
+	if response != nil {
+		respBody, err := io.ReadAll(httpResp.Body)
+		if err != nil {
+			return err
+		}
+		return json.Unmarshal(respBody, response)
+	}
+
+	return nil
+}
+
+// Delete implements common DELETE requests
+func (m *MockRESTClient) Delete(path string, response interface{}) error {
+	httpResp, err := m.Request("DELETE", path, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = httpResp.Body.Close() }()
+
+	if httpResp.StatusCode >= 400 {
+		return fmt.Errorf("HTTP %d", httpResp.StatusCode)
+	}
+
+	if response != nil {
+		respBody, err := io.ReadAll(httpResp.Body)
+		if err != nil {
+			return err
+		}
+		return json.Unmarshal(respBody, response)
+	}
+
+	return nil
+}
+
+// Do implements the generic Do method
+func (m *MockRESTClient) Do(method string, path string, body io.Reader, response interface{}) error {
+	httpResp, err := m.Request(method, path, body)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = httpResp.Body.Close() }()
+
+	if httpResp.StatusCode >= 400 {
+		return fmt.Errorf("HTTP %d", httpResp.StatusCode)
+	}
+
+	if response != nil {
+		respBody, err := io.ReadAll(httpResp.Body)
+		if err != nil {
+			return err
+		}
+		return json.Unmarshal(respBody, response)
+	}
+
+	return nil
+}
+
+// DoWithContext implements the generic DoWithContext method
+func (m *MockRESTClient) DoWithContext(ctx context.Context, method string, path string, body io.Reader, response interface{}) error {
+	// For mock purposes, we ignore the context
+	return m.Do(method, path, body, response)
+}
+
 // GetRequestCount returns the number of requests made to a URL pattern
 func (m *MockRESTClient) GetRequestCount(urlPattern string) int {
+	m.mutex.RLock()
+	defer m.mutex.RUnlock()
+
 	count := 0
 	for _, req := range m.Requests {
 		if strings.Contains(req.URL, urlPattern) || matchesPattern(req.URL, urlPattern) {
@@ -169,6 +284,9 @@ func (m *MockRESTClient) GetRequestCount(urlPattern string) int {
 
 // GetLastRequest returns the most recent request made
 func (m *MockRESTClient) GetLastRequest() *MockRequest {
+	m.mutex.RLock()
+	defer m.mutex.RUnlock()
+
 	if len(m.Requests) == 0 {
 		return nil
 	}
@@ -177,6 +295,8 @@ func (m *MockRESTClient) GetLastRequest() *MockRequest {
 
 // ClearRequests clears the request history
 func (m *MockRESTClient) ClearRequests() {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
 	m.Requests = make([]MockRequest, 0)
 }
 
@@ -282,15 +402,15 @@ func CreateMockCheckRuns(passed, failed, pending int) CheckRunsResponse {
 func CreateMockPRFiles(tektonOnly bool) []PRFile {
 	if tektonOnly {
 		return []PRFile{
-			{Filename: ".tekton/pipeline.yaml", Status: "modified"},
-			{Filename: ".tekton/task.yaml", Status: "added"},
+			{Filename: ".tekton/pipeline-pull-request.yaml", Status: "modified"},
+			{Filename: ".tekton/build-push.yaml", Status: "added"},
 		}
 	}
 
 	return []PRFile{
 		{Filename: "main.go", Status: "modified"},
 		{Filename: "README.md", Status: "modified"},
-		{Filename: ".tekton/pipeline.yaml", Status: "added"},
+		{Filename: ".tekton/pipeline-pull-request.yaml", Status: "added"},
 	}
 }
 
