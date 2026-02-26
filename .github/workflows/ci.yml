@@ -96,7 +96,7 @@ jobs:
 
     - name: Upload build artifacts
       if: github.event_name == 'pull_request'
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: ghprs-binary
         path: bin/ghprs
@@ -131,7 +131,7 @@ jobs:
       run: make build-all
 
     - name: Upload multi-platform artifacts
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: ghprs-multi-platform
         path: bin/
