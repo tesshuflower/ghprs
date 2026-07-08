@@ -1,9 +1,9 @@
 module ghprs
 
-go 1.24.0
+go 1.25.0
 
 require (
-	github.com/cli/go-gh/v2 v2.12.2
+	github.com/cli/go-gh/v2 v2.13.0
 	github.com/onsi/ginkgo/v2 v2.23.4
 	github.com/onsi/gomega v1.38.0
 	github.com/spf13/cobra v1.9.1
